@@ -16,7 +16,7 @@ export async function* readLines(body: ReadableStream<Uint8Array>): AsyncGenerat
     pending += decoder.decode();
     if (pending) yield pending.replace(/\r$/, "");
   } finally {
-    if (!complete) await reader.cancel().catch(() => {});
+    if (!complete) void reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }

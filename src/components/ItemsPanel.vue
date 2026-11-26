@@ -83,6 +83,24 @@ function orderedSources(sources: string[]): string[] {
                 {{ rowUpdates[item.id].message }}
               </p>
             </template>
+            <div v-if="item.institutionType === 'school' && item.schoolEnrollment"
+              class="mt-3 rounded-lg bg-canvas px-2.5 py-2 text-xs font-normal">
+              <p v-if="item.schoolEnrollment.upperGrades !== null" class="font-semibold">
+                10–11 классы: {{ item.schoolEnrollment.upperGrades }}
+              </p>
+              <p v-if="item.schoolEnrollment.grade10 !== null || item.schoolEnrollment.grade11 !== null"
+                class="mt-1 flex flex-wrap gap-x-2 text-secondary">
+                <span v-if="item.schoolEnrollment.grade10 !== null">10 класс — {{ item.schoolEnrollment.grade10 }}</span>
+                <span v-if="item.schoolEnrollment.grade11 !== null">11 класс — {{ item.schoolEnrollment.grade11 }}</span>
+              </p>
+              <p v-if="item.schoolEnrollment.total !== null" class="mt-1">Всего учащихся: {{ item.schoolEnrollment.total }}</p>
+              <p v-if="item.schoolEnrollment.academicYear" class="mt-1 text-secondary">{{ item.schoolEnrollment.academicYear }} учебный год</p>
+              <a :href="item.schoolEnrollment.sourceUrl" target="_blank" rel="noopener noreferrer"
+                class="mt-1 inline-block text-accent underline underline-offset-2">Источник численности</a>
+            </div>
+            <p v-else-if="item.institutionType === 'school' && item.id" class="mt-2 text-xs font-normal text-secondary">
+              Численность учащихся не подтверждена.
+            </p>
             <div v-if="item.sourceUrls.length" class="mt-2 flex flex-wrap items-start gap-x-3 gap-y-2 text-xs font-normal lg:flex-col">
               <a
                 v-for="source in orderedSources(item.sourceUrls)"

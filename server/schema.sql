@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS institutions (
 ALTER TABLE institutions ADD COLUMN IF NOT EXISTS institution_email text;
 ALTER TABLE institutions ADD COLUMN IF NOT EXISTS institution_phone text;
 ALTER TABLE institutions ADD COLUMN IF NOT EXISTS manual_edits jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE institutions ADD COLUMN IF NOT EXISTS school_enrollment jsonb;
 ALTER TABLE institutions ADD COLUMN IF NOT EXISTS institution_type text CHECK (
   institution_type IN ('university', 'college', 'school', 'kindergarten', 'supplementary', 'other')
 );
@@ -35,3 +36,15 @@ CREATE TABLE IF NOT EXISTS school_mail_deliveries (
 );
 
 ALTER TABLE school_mail_deliveries ADD COLUMN IF NOT EXISTS message_id text;
+ALTER TABLE school_mail_deliveries ADD COLUMN IF NOT EXISTS subject text;
+ALTER TABLE school_mail_deliveries ADD COLUMN IF NOT EXISTS finished_at timestamptz;
+
+CREATE INDEX IF NOT EXISTS school_mail_deliveries_sent_at_idx
+  ON school_mail_deliveries (institution_id, (COALESCE(finished_at, created_at))) WHERE status = 'sent';
+
+CREATE TABLE IF NOT EXISTS school_mail_templates (
+  id uuid PRIMARY KEY,
+  name text NOT NULL,
+  subject text NOT NULL,
+  text text NOT NULL
+);

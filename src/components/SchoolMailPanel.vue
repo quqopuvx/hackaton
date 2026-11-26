@@ -1,27 +1,41 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { isSingleEmail, renderSchoolMail, schoolMailDraft, schoolMailLimit, schoolMailTemplates, schoolMailTextLimit, schoolNameToken } from "../../lib/school-mail";
-import type { SchoolMailOutcome, SchoolMailTemplate } from "../../lib/school-mail";
+import { isSingleEmail, personalizeSchoolMail, schoolMailDraft, schoolMailLimit, schoolMailTemplates, schoolMailTextLimit, schoolNameToken } from "../../lib/school-mail";
+import type { SavedSchoolMailTemplate, SchoolMailOutcome, SchoolMailTemplate } from "../../lib/school-mail";
 import type { Institution } from "../../lib/types";
 
-const props = defineProps<{ schools: Institution[] }>();
+const props = defineProps<{ schools: Institution[]; savedTemplates: SavedSchoolMailTemplate[]; reminderPreset: boolean }>();
 const emit = defineEmits<{ lock: []; reset: []; sent: [] }>();
-const template = ref<SchoolMailTemplate | "">("");
+const template = ref(props.reminderPreset ? "reminder" : "");
 const draft = ref("");
-watch(template, (value) => { draft.value = value ? schoolMailDraft(value) : ""; });
+const selectedTemplate = computed(() => {
+  if (Object.hasOwn(schoolMailTemplates, template.value)) {
+    const key = template.value as SchoolMailTemplate;
+    return { subject: schoolMailTemplates[key], text: schoolMailDraft(key) };
+  }
+  return props.savedTemplates.find(({ id }) => id === template.value);
+});
+const subject = ref("");
+function restoreTemplate(): void {
+  draft.value = selectedTemplate.value?.text ?? "";
+  subject.value = selectedTemplate.value?.subject ?? "";
+}
+watch(template, restoreTemplate, { immediate: true });
 const accessCode = ref("");
 const previewId = ref("");
 const busy = ref(false);
 const error = ref("");
 const outcomes = ref<SchoolMailOutcome[]>();
-const snapshot = ref<{ requestId: string; template: SchoolMailTemplate; schools: Institution[]; text: string }>();
+const snapshot = ref<{ requestId: string; template: string; schools: Institution[]; text: string; subject: string }>();
 const schools = computed(() => snapshot.value?.schools ?? props.schools);
 const previewSchool = computed(() => schools.value.find((school) => school.id === previewId.value) ?? schools.value[0]);
-const preview = computed(() => template.value && previewSchool.value
-  ? renderSchoolMail(template.value, previewSchool.value.name, snapshot.value?.text ?? draft.value) : undefined);
+const preview = computed(() => subject.value && previewSchool.value ? {
+  subject: snapshot.value?.subject ?? subject.value,
+  text: personalizeSchoolMail(snapshot.value?.text ?? draft.value, previewSchool.value.name),
+} : undefined);
 const valid = computed(() => schools.value.every((school) =>
   school.institutionType === "school" && isSingleEmail(school.institutionEmail?.trim() ?? "")));
-const canSubmit = computed(() => template.value && draft.value.trim() && draft.value.length <= schoolMailTextLimit &&
+const canSubmit = computed(() => template.value && subject.value && draft.value.trim() && draft.value.length <= schoolMailTextLimit &&
   valid.value && accessCode.value && !busy.value &&
   (!outcomes.value || outcomes.value.some((result) => result.status === "sending")));
 const resultLabels = {
@@ -41,14 +55,15 @@ async function send(): Promise<void> {
   error.value = "";
   try {
     const request = snapshot.value ??= {
-      requestId: crypto.randomUUID(), template: template.value, schools: [...props.schools], text: draft.value.trim(),
+      requestId: crypto.randomUUID(), template: template.value, schools: [...props.schools],
+      text: draft.value.trim(), subject: subject.value,
     };
     emit("lock");
     const response = await fetch("/api/school-mail", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        requestId: request.requestId, template: request.template, accessCode: accessCode.value, text: request.text,
+        requestId: request.requestId, template: request.template, accessCode: accessCode.value, text: request.text, subject: request.subject,
         recipients: request.schools.map((school) => ({ id: school.id, email: school.institutionEmail?.trim() })),
       }),
     });
@@ -92,6 +107,9 @@ async function send(): Promise<void> {
           <select v-model="template" :class="controlClass" :disabled="!!snapshot">
             <option value="" disabled>Выберите шаблон</option>
             <option v-for="(label, key) in schoolMailTemplates" :key="key" :value="key">{{ label }}</option>
+            <optgroup v-if="savedTemplates.length" label="Сохранённые шаблоны">
+              <option v-for="saved in savedTemplates" :key="saved.id" :value="saved.id">{{ saved.name }}</option>
+            </optgroup>
           </select>
         </label>
         <label v-if="preview && schools.length > 1" class="grid gap-1 text-sm font-medium">
@@ -107,7 +125,7 @@ async function send(): Promise<void> {
           aria-describedby="school-mail-personalization" :class="controlClass" class="resize-y py-3" />
         <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-secondary">
           <p id="school-mail-personalization">Вместо <code>{{ schoolNameToken }}</code> подставится название школы.</p>
-          <button type="button" class="min-h-11 font-medium text-accent" @click="draft = schoolMailDraft(template)">
+          <button type="button" class="min-h-11 font-medium text-accent" @click="restoreTemplate">
             Восстановить шаблон
           </button>
         </div>

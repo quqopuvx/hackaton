@@ -1,5 +1,14 @@
 import type { InstitutionType } from "./institution-types.ts";
 
+export interface SchoolEnrollment {
+  grade10: number | null;
+  grade11: number | null;
+  upperGrades: number | null;
+  total: number | null;
+  academicYear: string | null;
+  sourceUrl: string;
+}
+
 export interface InstitutionDetails {
   name: string;
   city: string;
@@ -9,9 +18,10 @@ export interface InstitutionDetails {
   institutionEmail: string | null;
   institutionPhone: string | null;
   sourceUrls: string[];
+  schoolEnrollment?: SchoolEnrollment | null;
 }
 
-export type InstitutionEdits = Partial<InstitutionDetails>;
+export type InstitutionEdits = Partial<Omit<InstitutionDetails, "schoolEnrollment">>;
 
 export interface Institution extends InstitutionDetails {
   id: string;

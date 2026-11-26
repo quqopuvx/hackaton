@@ -1,7 +1,7 @@
 import { ImapFlow } from "imapflow";
 import PostalMime from "postal-mime";
 import { convert } from "html-to-text";
-import { schoolMailTemplates, type SchoolReply } from "../lib/school-mail.ts";
+import { schoolMailTemplates, type SchoolMailTemplate, type SchoolReply } from "../lib/school-mail.ts";
 import { listSentSchoolMail, markSchoolsReplied, type SentSchoolMail } from "../lib/store.ts";
 
 const daysToSearch = 90;
@@ -36,8 +36,8 @@ function matchDelivery(
   // Earlier versions did not record SMTP message IDs.
   if (!replyPrefix.test(subject)) return;
   const originalSubject = subject.replace(replyPrefix, "").trim().toLocaleLowerCase("ru");
-  const candidates = earlier.filter(({ template }) =>
-    schoolMailTemplates[template]?.toLocaleLowerCase("ru") === originalSubject);
+  const candidates = earlier.filter(({ template, subject }) =>
+    (subject ?? schoolMailTemplates[template as SchoolMailTemplate])?.toLocaleLowerCase("ru") === originalSubject);
   if (new Set(candidates.map(({ schoolId }) => schoolId)).size === 1) {
     return candidates.find(({ messageId }) => !messageId);
   }

@@ -5,9 +5,12 @@ import { readInstitutionCompletion } from "./stream-institutions.ts";
 import { institutionTypeLabels, readInstitutionType } from "../institution-types.ts";
 import { isDirectorySource } from "../institution-sources.ts";
 import { readInstitutionSiteEmail } from "./official-email.ts";
+import { readOfficialSchoolEnrollment } from "./school-enrollment.ts";
+import { SearchDeadlineError, withSearchDeadline } from "./deadline.ts";
+import { isYakutskSchoolList, numberedSchool, schoolsFromYakutskPortal } from "./official-school-discovery.ts";
 
 const maxResults = 10;
-const cheapVibeTimeoutSeconds = 55;
+const cheapVibeTimeoutSeconds = 24;
 type OnInstitution = (institution: InstitutionDetails, checkingContacts: boolean) => void;
 type Discovery = { institutions: InstitutionDetails[]; partial?: boolean };
 type SearchProgress = { institution: InstitutionDetails; checkingContacts: boolean };
@@ -129,7 +132,7 @@ function sourceHost(url: string): string {
 }
 
 function isContactAggregator(host: string): boolean {
-  return /(?:^|\.)(?:2gis\.ru|rusprofile\.ru|list-org\.com|klerk\.ru|spark-interfax\.ru|vk\.ru|vk\.com|wikipedia\.org)$/.test(host);
+  return /(?:^|\.)(?:2gis\.ru|rusprofile\.ru|list-org\.com|klerk\.ru|spark-interfax\.ru|focus\.kontur\.ru|firmalyze\.ru|rocketreach\.co|kedu\.ru|vk\.ru|vk\.com|wikipedia\.org)$/.test(host);
 }
 
 function institutionNameText(value: string): string {
@@ -365,6 +368,19 @@ async function extractWithCheapVibeCode(
   onRecord?: (record: unknown) => void,
   maxTokens = 1200,
   timeoutSeconds = cheapVibeTimeoutSeconds,
+  parentSignal?: AbortSignal,
+): Promise<string> {
+  return withSearchDeadline(
+    timeoutSeconds * 1000,
+    `CheapVibeCode не завершил обработку результатов за ${timeoutSeconds} секунд.`,
+    (signal) => requestCheapVibeCode(instructions, input, onRecord, maxTokens,
+      parentSignal ? AbortSignal.any([parentSignal, signal]) : signal),
+  );
+}
+
+async function requestCheapVibeCode(
+  instructions: string, input: string, onRecord: ((record: unknown) => void) | undefined,
+  maxTokens: number, signal: AbortSignal,
 ): Promise<string> {
   const key = process.env.CHEAPVIBECODE_API_KEY;
   if (!key) throw new Error("Добавьте CHEAPVIBECODE_API_KEY в .env.local.");
@@ -374,7 +390,7 @@ async function extractWithCheapVibeCode(
     response = await fetch("https://ru.cheapvibecode.ru/v1/chat/completions", {
       method: "POST",
       redirect: "error",
-      signal: AbortSignal.timeout(timeoutSeconds * 1000),
+      signal,
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: process.env.CHEAPVIBECODE_MODEL || "qwen3.8-flash",
@@ -387,10 +403,8 @@ async function extractWithCheapVibeCode(
         ...(onRecord ? { stream: true } : {}),
       }),
     });
-  } catch (error) {
-    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
-      throw new Error(`CheapVibeCode не завершил обработку результатов за ${timeoutSeconds} секунд.`);
-    }
+  } catch {
+    signal.throwIfAborted();
     throw new Error("Не удалось установить соединение с CheapVibeCode для обработки результатов.");
   }
   if (response.status === 429) throw await rateLimitError(response, "CheapVibeCode");
@@ -402,11 +416,11 @@ async function extractWithCheapVibeCode(
     if (!response.body) throw new Error("CheapVibeCode вернул пустой поток.");
     let completion: Awaited<ReturnType<typeof readInstitutionCompletion>>;
     try {
-      completion = await readInstitutionCompletion(response.body, onRecord ?? (() => {}));
-    } catch (error) {
-      if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
-        throw new Error(`CheapVibeCode не завершил обработку результатов за ${timeoutSeconds} секунд.`);
-      }
+      completion = await readInstitutionCompletion(response.body, (record) => {
+        if (!signal.aborted) onRecord?.(record);
+      });
+    } catch {
+      signal.throwIfAborted();
       throw new Error("Поток результатов CheapVibeCode прервался.");
     }
     if (completion.finishReason !== "stop" || !completion.content.trim()) {
@@ -414,10 +428,8 @@ async function extractWithCheapVibeCode(
     }
     return completion.content;
   }
-  const payload = await response.json().catch((error: unknown) => {
-    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
-      throw new Error(`CheapVibeCode не завершил обработку результатов за ${timeoutSeconds} секунд.`);
-    }
+  const payload = await response.json().catch(() => {
+    signal.throwIfAborted();
     throw new Error("CheapVibeCode вернул повреждённый или неполный ответ.");
   }) as {
     choices?: Array<{ finish_reason?: string; message?: { content?: string } }>;
@@ -453,13 +465,14 @@ async function searchWithTavily(
   }));
 
   const searchSources = async (
-    text: string, limit: number, timeout = 25_000, includePageIntro = false, domains: string[] = [],
-  ): Promise<SourceExcerpt[]> => {
+    text: string, limit: number, timeout = 15_000, includePageIntro = false, domains: string[] = [], parentSignal?: AbortSignal,
+  ): Promise<SourceExcerpt[]> => withSearchDeadline(
+    timeout, "Tavily не успел передать результаты веб-поиска.", async (signal) => {
     let response: Response;
     try {
       response = await fetch("https://api.tavily.com/search", {
         method: "POST",
-        signal: AbortSignal.timeout(timeout),
+        signal: parentSignal ? AbortSignal.any([parentSignal, signal]) : signal,
         headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           query: text,
@@ -511,16 +524,20 @@ async function searchWithTavily(
           ? { catalogText: page } : {}),
       }];
     });
-  };
+  }).catch((error: unknown) => {
+    if (error instanceof SearchDeadlineError) throw new TavilyNetworkError(error.message);
+    throw error;
+  });
 
-  async function findContacts(candidate: InstitutionIdentity): Promise<InstitutionDetails | undefined> {
+  async function findContacts(candidate: InstitutionIdentity, signal?: AbortSignal): Promise<InstitutionDetails | undefined> {
     const search = `${candidate.name} ${candidate.city} официальный сайт контакты основные сведения sveden/common телефон электронная почта`;
-    const found = await searchSources(search.slice(0, 400), 5, 12_000, Boolean(target));
+    const found = await searchSources(search.slice(0, 400), 5, 12_000, Boolean(target), [], signal);
+    signal?.throwIfAborted();
     if (target && savedHosts.size && !found.some((source) => source.linkedInstitutionRow ||
       (savedHosts.has(sourceHost(source.url)) && containsInstitutionName(source, target.name) && source.contactText))) {
       const siteResults = await searchSources(
         `${targetName} ${target.city} контакты телефон электронная почта`.trim().slice(0, 400),
-        3, 12_000, true, [...savedHosts].slice(0, 5),
+        3, 12_000, true, [...savedHosts].slice(0, 5), signal,
       ).catch((error: unknown) => {
         if (!found.length) throw error;
         return [];
@@ -555,7 +572,7 @@ async function searchWithTavily(
 Если linkedInstitutionRow равно true, передана только строка этого учреждения из справочника со ссылкой на его сайт.
 Указывай источник каждого контакта именно там, где напечатан контакт. Телефон без кода города копируй в опубликованном виде.`;
     const rawContact = provider === "cheapvibecode"
-      ? await extractWithCheapVibeCode(extractInstructions, contactInput, undefined, 800, 32)
+      ? await extractWithCheapVibeCode(extractInstructions, contactInput, undefined, 800, 20, signal)
       : await extractWithGigaChat(extractInstructions, contactInput, resultFormat.schema);
     const contacts = readInstitutions(rawContact);
     if (!contacts) throw new Error("Модель вернула контакты в неподдерживаемом формате.");
@@ -584,11 +601,21 @@ async function searchWithTavily(
     return { institutions: verified ? [verified] : [] };
   }
 
-  const officialQuery = `${query} Россия официальный сайт контакты телефон электронная почта руководитель директор`;
+  const normalized = normalize(query);
+  const yakutskList = isYakutskSchoolList(normalized);
+  const schoolSearch = isSchoolQuery(normalized);
+  const officialQuery = schoolSearch
+    ? `${query} Россия официальный сайт адрес сведения об образовательной организации`
+    : `${query} Россия официальный сайт контакты телефон электронная почта руководитель директор`;
   const searches = await Promise.allSettled([
     searchSources(officialQuery, 8),
     searchSources(`${query} Россия официальный реестр образовательных организаций перечень учреждений департамента образования`,
-      4, 25_000, true),
+      4, 15_000, true),
+    ...(schoolSearch ? [searchSources(
+      yakutskList ? "Якутск МОБУ СОШ адрес школа сведения об образовательной организации sveden"
+        : `${query} официальный сайт школы сведения об образовательной организации sveden education`,
+      yakutskList ? 10 : 4, 15_000, true, yakutskList ? ["obr.sakha.gov.ru"] : [],
+    )] : []),
   ]);
   const searchFailures = searches.flatMap((search) => search.status === "rejected" ? [search.reason] : []);
   const uniqueSources = new Map<string, SourceExcerpt>();
@@ -599,7 +626,7 @@ async function searchWithTavily(
     }
   }
   if (!uniqueSources.size && searchFailures.some((error) => error instanceof TavilyNetworkError)) {
-    for (const source of await searchSources(officialQuery, 5)) {
+    for (const source of await searchSources(officialQuery, 5, 9000)) {
       if (!uniqueSources.has(source.url)) uniqueSources.set(source.url, source);
     }
   }
@@ -607,7 +634,7 @@ async function searchWithTavily(
     if (searchFailures.length) throw searchFailures[0];
     return { institutions: [] };
   }
-  const sources = [...uniqueSources.values()].sort((a, b) =>
+  const sources = [...uniqueSources.values()].filter((source) => !isContactAggregator(sourceHost(source.url))).sort((a, b) =>
     Number(isDirectorySource(a.url, a.title)) - Number(isDirectorySource(b.url, b.title)),
   );
 
@@ -620,39 +647,48 @@ async function searchWithTavily(
   const candidates = new Map<string, SearchProgress>();
   const failures: unknown[] = [];
 
-  async function checkContacts(entry: SearchProgress): Promise<void> {
+  async function checkContacts(entry: SearchProgress, signal: AbortSignal): Promise<void> {
     const candidate = entry.institution;
-    if (hasContactDetails(candidate)) return;
+    if (hasContactDetails(candidate) || signal.aborted) return;
     try {
       const { name, city, region } = candidate;
-      const verified = await findContacts({ name, city, region });
-      if (verified) entry.institution = mergeContactDetails(entry.institution, verified);
-    } catch (error) {
-      failures.push(error);
+      const verified = await findContacts({ name, city, region }, signal);
+      if (verified && !signal.aborted) entry.institution = mergeContactDetails(entry.institution, verified);
+    } catch {
+      // Contact enrichment is optional once the school and its source are verified.
     }
   }
 
-  async function processBatch(batch: typeof sources): Promise<void> {
-    const knownUrls = new Set(batch.map((source) => source.url));
-    const newEntries: SearchProgress[] = [];
-    const register = (institution: InstitutionDetails) => {
-      const identity = institutionKey(institution);
-      const previous = candidates.get(identity);
-      if (previous) {
-        previous.institution = mergeContactDetails(previous.institution, institution);
-        onInstitution?.(previous.institution, previous.checkingContacts);
-      } else if (candidates.size < maxResults) {
-        const entry = { institution, checkingContacts: !hasContactDetails(institution) };
-        candidates.set(identity, entry);
-        newEntries.push(entry);
-        onInstitution?.(institution, entry.checkingContacts);
-      }
-    };
+  function register(institution: InstitutionDetails): void {
+    if (schoolSearch && institution.institutionType !== "school") return;
+    if (yakutskList) {
+      if (!/^(?:(?:г|город) )?якутск$/u.test(normalize(institution.city))) return;
+      institution = { ...institution, city: "Якутск" };
+    }
+    const schoolNumber = yakutskList ? numberedSchool(institution.name) : undefined;
+    const identity = schoolNumber !== undefined ? `yakutsk-school:${schoolNumber}` : institutionKey(institution);
+    const previous = candidates.get(identity);
+    if (previous) {
+      previous.institution = mergeContactDetails(previous.institution, institution);
+      onInstitution?.(previous.institution, previous.checkingContacts);
+    } else if (candidates.size < maxResults) {
+      const entry = { institution, checkingContacts: !hasContactDetails(institution) };
+      candidates.set(identity, entry);
+      onInstitution?.(institution, entry.checkingContacts);
+    }
+  }
 
+  if (yakutskList) schoolsFromYakutskPortal(sources).forEach(register);
+
+  async function processBatch(batch: typeof sources, timeoutSeconds = cheapVibeTimeoutSeconds): Promise<void> {
+    const knownUrls = new Set(batch.map((source) => source.url));
     try {
       const indexedSources = new Map(batch.map((source, index) => [`S${index + 1}`, source]));
       const inputSources = provider === "cheapvibecode"
-        ? [...indexedSources].map(([id, { url, ...source }]) => ({ id, site: sourceHost(url), ...source }))
+        ? [...indexedSources].map(([id, source]) => ({
+          id, site: sourceHost(source.url), title: source.title, excerpt: source.excerpt,
+          pageIntro: source.pageIntro?.slice(0, 800), contactText: source.contactText.slice(0, 320),
+        }))
         : batch;
       const input = JSON.stringify({ query, sources: inputSources });
       const decodeSourceReferences = (record: unknown): unknown => {
@@ -671,9 +707,10 @@ async function searchWithTavily(
       };
       const raw = provider === "cheapvibecode"
         ? await extractWithCheapVibeCode(
-          `${extractionInstructions}\nВ полях sourceUrl, leaderSourceUrl, emailSourceUrl и phoneSourceUrl используй только ID из поля id, например "S1". Полные URL не выводи. Название учреждения скопируй из выдержки. Верни максимум четыре учреждения.`,
+          `${extractionInstructions}\nВ полях sourceUrl, leaderSourceUrl, emailSourceUrl и phoneSourceUrl используй только ID из поля id, например "S1". Полные URL не выводи. Название учреждения скопируй из выдержки. Верни максимум три учреждения.`,
           input,
           (record) => validateInstitutions([decodeSourceReferences(record)], knownUrls, true, batch).forEach(register),
+          1000, timeoutSeconds,
         )
         : await extractWithGigaChat(`${extractionInstructions}\nКопируй адреса источников из поля url без изменений.`, input, resultFormat.schema);
       const institutions = readInstitutions(raw);
@@ -684,20 +721,34 @@ async function searchWithTavily(
       failures.push(error);
     }
 
-    for (const entry of newEntries) {
-      if (!entry.checkingContacts) continue;
-      await checkContacts(entry);
+  }
+
+  if (candidates.size < 3 && sources.length) {
+    const chosenSources = provider === "cheapvibecode" ? sources.slice(0, 9) : sources;
+    const batchSize = provider === "cheapvibecode" ? 3 : chosenSources.length;
+    const batches = Array.from({ length: Math.ceil(chosenSources.length / batchSize) }, (_, index) =>
+      chosenSources.slice(index * batchSize, (index + 1) * batchSize),
+    );
+    await Promise.all(batches.map((batch) => processBatch(batch)));
+    if (provider === "cheapvibecode" && !candidates.size && failures.some((error) => error instanceof SearchDeadlineError)) {
+      await processBatch(batches[0].slice(0, 2), 12);
+    }
+  }
+  if (!candidates.size && failures.length) throw failures[0];
+  const entries = [...candidates.values()];
+  const pendingContacts = entries.filter((entry) => entry.checkingContacts);
+  if (pendingContacts.length) {
+    await withSearchDeadline(9000, "Проверка дополнительных контактов заняла слишком много времени.", async (signal) => {
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(3, pendingContacts.length) }, async () => {
+        while (!signal.aborted && next < pendingContacts.length) await checkContacts(pendingContacts[next++], signal);
+      }));
+    }).catch(() => {});
+    for (const entry of pendingContacts) {
       entry.checkingContacts = false;
       onInstitution?.(entry.institution, false);
     }
   }
-
-  const batchSize = provider === "cheapvibecode" ? 4 : sources.length;
-  const batches = Array.from({ length: Math.ceil(sources.length / batchSize) }, (_, index) =>
-    sources.slice(index * batchSize, (index + 1) * batchSize),
-  );
-  await Promise.all(batches.map(processBatch));
-  if (!candidates.size && failures.length) throw failures[0];
   return {
     institutions: [...candidates.values()].map((entry) => entry.institution),
     ...(searchFailures.length || failures.length ? { partial: true } : {}),
@@ -738,6 +789,24 @@ async function findOfficialEmail(target: InstitutionTarget): Promise<{ email: st
   if (new Set(results.map(({ email }) => email.toLowerCase())).size === 1) return results[0];
 }
 
+async function findSchoolEnrollment(school: InstitutionDetails, signal?: AbortSignal) {
+  if (school.institutionType !== "school") return;
+  const name = institutionNameText(school.name);
+  const city = normalize(school.city).replace(/^(?:г|город|с|село|поселок) /, "");
+  const namedNumber = /(?:^| )(?:школа|гимназия|лицей) (?:n |номер )?(\d{1,4})(?: |$)/u.exec(name)?.[1];
+  const sources = school.sourceUrls.flatMap((source) => {
+    const url = publicUrl(source);
+    return url?.startsWith("https:") && !isDirectorySource(url) && !isContactAggregator(sourceHost(url)) ? [url] : [];
+  }).sort((a, b) => Number(/\/sveden\//i.test(b)) - Number(/\/sveden\//i.test(a)));
+  return readOfficialSchoolEnrollment(sources, (headings, text) => {
+    const heading = institutionNameText(headings);
+    const siteNumber = /(?:^| )(?:школа|гимназия|лицей) (?:n |номер )?(\d{1,4})(?: |$)/u.exec(heading)?.[1];
+    const fullNameInBody = name.split(" ").length >= 2 && mentionsName(institutionNameText(text), name);
+    return mentionsName(normalize(text), city) &&
+      (mentionsName(heading, name) || Boolean(namedNumber && siteNumber === namedNumber) || fullNameInBody);
+  }, signal).catch(() => undefined);
+}
+
 export function refreshInstitution(id: string): Promise<InstitutionRefreshResult | "conflict" | undefined> {
   const pending = refreshes.get(id);
   if (pending) return pending;
@@ -747,21 +816,31 @@ export function refreshInstitution(id: string): Promise<InstitutionRefreshResult
     if (!original) return;
     const { name, city, region } = original;
     const target = { name, city, region, sourceUrls: original.sourceUrls };
-    const [search, officialEmail] = await Promise.allSettled([searchWeb("", undefined, target), findOfficialEmail(target)]);
+    const [search, officialEmail, officialEnrollment] = await Promise.allSettled([
+      searchWeb("", undefined, target), findOfficialEmail(target), findSchoolEnrollment(original),
+    ]);
     const official = officialEmail.status === "fulfilled" ? officialEmail.value : undefined;
-    if (search.status === "rejected" && !official) throw search.reason;
+    const enrollment = officialEnrollment.status === "fulfilled" ? officialEnrollment.value : undefined;
+    if (search.status === "rejected" && !official && !enrollment) throw search.reason;
     let verified = search.status === "fulfilled" ? search.value.institutions.find((item) =>
       institutionKey(item) === institutionKey(original) && item.sourceUrls.some((url) => !isDirectorySource(url)),
     ) : undefined;
-    if (official) {
+    if (official || enrollment) {
       verified = {
         name, city, region,
         institutionType: verified?.institutionType ?? null,
         leaderName: verified?.leaderName ?? null,
         institutionPhone: verified?.institutionPhone ?? null,
-        institutionEmail: official.email,
-        sourceUrls: [...new Set([official.url, ...(verified?.sourceUrls ?? [])])],
+        institutionEmail: official?.email ?? verified?.institutionEmail ?? null,
+        sourceUrls: [...new Set([...(official ? [official.url] : []), ...(verified?.sourceUrls ?? [])])],
+        schoolEnrollment: enrollment,
       };
+    }
+    if (verified && !verified.schoolEnrollment && original.institutionType === "school" &&
+        verified.sourceUrls.some((url) => !original.sourceUrls.includes(url))) {
+      verified.schoolEnrollment = await findSchoolEnrollment({
+        ...original, sourceUrls: verified.sourceUrls.filter((url) => !original.sourceUrls.includes(url)),
+      });
     }
     if (!verified) {
       const current = await findInstitution(id);
@@ -771,6 +850,7 @@ export function refreshInstitution(id: string): Promise<InstitutionRefreshResult
     if (!institution) return "conflict";
     const changed = institution.leaderName !== original.leaderName ||
       institution.institutionEmail !== original.institutionEmail || institution.institutionPhone !== original.institutionPhone ||
+      JSON.stringify(institution.schoolEnrollment) !== JSON.stringify(original.schoolEnrollment) ||
       institution.sourceUrls.length !== original.sourceUrls.length ||
       institution.sourceUrls.some((url) => !original.sourceUrls.includes(url));
     return { institution, status: changed ? "updated" : "unchanged" };
@@ -860,13 +940,20 @@ function validateInstitutions(
   return results;
 }
 
+function isSchoolQuery(normalized: string): boolean {
+  return /^(?:(?:найди|покажи|перечисли) )?(?:все )?(?:школы|школа|лицеи|гимназии|сош)(?: |$)/u.test(normalized) &&
+    !/(?:^| )(?:и|или|плюс)(?: |$)/u.test(normalized);
+}
+
 export function runAgent(query: string, onInstitution?: OnInstitution): Promise<SearchResult> {
   const normalizedQuery = normalize(query);
   const universitySearch = /^(?:(?:найди|покажи|перечисли) )?(?:все )?(?:университеты|вузы)(?: |$)/u.test(normalizedQuery) &&
     !/(?:^| )(?:и|или|плюс)(?: |$)/u.test(normalizedQuery);
+  const schoolSearch = isSchoolQuery(normalizedQuery);
   const matchesRequestedType = (institution: InstitutionDetails) =>
-    !universitySearch || institution.institutionType === "university";
-  const queryKey = `institution-directory:v2:${normalizedQuery}`;
+    (!universitySearch || institution.institutionType === "university") &&
+    (!schoolSearch || institution.institutionType === "school");
+  const queryKey = `institution-directory:${schoolSearch ? "v4" : "v2"}:${normalizedQuery}`;
   const pending = inFlight.get(queryKey);
   if (pending) {
     if (!onInstitution) return pending.result;
@@ -891,7 +978,24 @@ export function runAgent(query: string, onInstitution?: OnInstitution): Promise<
     if (cached?.length) return { institutions: cached, cached: true };
 
     const found = await searchWeb(query, publish);
-    const institutions = await saveSearch(queryKey, found.institutions.filter(matchesRequestedType), !found.partial);
+    const records = found.institutions.filter(matchesRequestedType);
+    const schools = records.filter((item) => item.institutionType === "school");
+    if (schools.length) {
+      await withSearchDeadline(12000, "Проверка численности заняла слишком много времени.", async (signal) => {
+        let next = 0;
+        await Promise.all(Array.from({ length: Math.min(4, schools.length) }, async () => {
+          while (!signal.aborted && next < schools.length) {
+            const school = schools[next++];
+            const schoolEnrollment = await findSchoolEnrollment(school, signal);
+            if (schoolEnrollment && !signal.aborted) {
+              school.schoolEnrollment = schoolEnrollment;
+              publish(school, false);
+            }
+          }
+        }));
+      }).catch(() => {});
+    }
+    const institutions = await saveSearch(queryKey, records, !found.partial);
     const arrival = new Map([...previews.keys()].map((key, index) => [key, index]));
     institutions.sort((a, b) =>
       (arrival.get(institutionKey(a)) ?? Infinity) - (arrival.get(institutionKey(b)) ?? Infinity),

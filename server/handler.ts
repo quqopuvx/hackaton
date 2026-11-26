@@ -1,11 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { DatabaseError } from "pg";
+import { randomUUID } from "node:crypto";
 import { authorizeSchoolMail, sendSchoolMail } from "./school-mail.ts";
 import { readSchoolReplies } from "./school-replies.ts";
-import { isSingleEmail, schoolMailLimit, schoolMailTemplates, schoolMailTextLimit, type SchoolMailRecipient, type SchoolMailTemplate } from "../lib/school-mail.ts";
+import { isSingleEmail, schoolMailDraft, schoolMailLimit, schoolMailSubjectLimit, schoolMailTemplates, schoolMailTextLimit, type SchoolMailRecipient, type SchoolMailTemplate } from "../lib/school-mail.ts";
 import { refreshInstitution, runAgent } from "../lib/ai/agent.ts";
 import { institutionTypeLabels, type InstitutionType } from "../lib/institution-types.ts";
-import { listInstitutions, normalize, updateInstitution } from "../lib/store.ts";
+import { findSchoolMailTemplate, listInstitutions, listSchoolMailHistory, listSchoolMailReminders, listSchoolMailTemplates, normalize, saveSchoolMailTemplate, updateInstitution } from "../lib/store.ts";
 import type { InstitutionEdits, SearchEvent } from "../lib/types.ts";
 
 class InputError extends Error {}
@@ -105,6 +106,40 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+const uuidPattern = /^[a-f\d]{8}-[a-f\d]{4}-4[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i;
+
+function isMailLine(value: unknown, limit: number): value is string {
+  return typeof value === "string" && !!value.trim() && value.length <= limit && !/[\r\n\0]/.test(value);
+}
+
+function isMailText(value: unknown): value is string {
+  return typeof value === "string" && !!value.trim() && value.length <= schoolMailTextLimit && !value.includes("\0");
+}
+
+async function handleMailTemplates(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method === "GET") {
+    send(res, 200, { templates: await listSchoolMailTemplates() });
+    return;
+  }
+  if (req.method !== "POST") {
+    send(res, 405, { error: "Метод не поддерживается." });
+    return;
+  }
+  if (req.headers["content-type"]?.split(";")[0].trim().toLowerCase() !== "application/json") {
+    throw new InputError("Ожидается application/json.");
+  }
+  const { id, name, subject, text } = await readBody(req, 24 * 1024);
+  if (id !== undefined && (typeof id !== "string" || !uuidPattern.test(id))) throw new InputError("Некорректный шаблон.");
+  if (!isMailLine(name, 100) || !isMailLine(subject, schoolMailSubjectLimit) || !isMailText(text)) {
+    throw new InputError("Заполните название, тему и текст шаблона.");
+  }
+  const template = await saveSchoolMailTemplate({
+    id: id ?? randomUUID(), name: name.trim(), subject: subject.trim(), text: text.trim(),
+  }, id !== undefined);
+  if (template) send(res, id === undefined ? 201 : 200, { template });
+  else send(res, 404, { error: "Шаблон не найден." });
+}
+
 async function handleSchoolMail(req: IncomingMessage, res: ServerResponse, replies = false): Promise<void> {
   if (req.method !== "POST") {
     send(res, 405, { error: "Метод не поддерживается." });
@@ -122,7 +157,7 @@ async function handleSchoolMail(req: IncomingMessage, res: ServerResponse, repli
     send(res, 200, { replies: await readSchoolReplies() });
     return;
   }
-  const { requestId, template, recipients, accessCode, text } = await readBody(req, 32 * 1024);
+  const { requestId, template, recipients, accessCode, text, subject } = await readBody(req, 32 * 1024);
   const access = authorizeSchoolMail(typeof accessCode === "string" ? accessCode : "");
   if (access === "unconfigured") {
     send(res, 503, { error: "Почта ещё не настроена. Обратитесь к администратору." });
@@ -132,11 +167,11 @@ async function handleSchoolMail(req: IncomingMessage, res: ServerResponse, repli
     send(res, 403, { error: "Проверьте код доступа к почте." });
     return;
   }
-  if (text !== undefined && (typeof text !== "string" || !text.trim() || text.length > schoolMailTextLimit || text.includes("\0"))) {
+  if (text !== undefined && !isMailText(text)) {
     throw new InputError(`Текст письма должен содержать от 1 до ${schoolMailTextLimit} символов.`);
   }
-  if (typeof requestId !== "string" || !/^[a-f\d]{8}-[a-f\d]{4}-4[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i.test(requestId) ||
-      typeof template !== "string" || !Object.hasOwn(schoolMailTemplates, template) ||
+  if (typeof requestId !== "string" || !uuidPattern.test(requestId) ||
+      typeof template !== "string" || (!Object.hasOwn(schoolMailTemplates, template) && !uuidPattern.test(template)) ||
       !Array.isArray(recipients) || recipients.length === 0 || recipients.length > schoolMailLimit) {
     throw new InputError(`Выберите шаблон и от 1 до ${schoolMailLimit} школ.`);
   }
@@ -149,7 +184,17 @@ async function handleSchoolMail(req: IncomingMessage, res: ServerResponse, repli
     }
     selected.set(id, { id, email });
   }
-  send(res, 200, { outcomes: await sendSchoolMail(requestId, template as SchoolMailTemplate, [...selected.values()], text) });
+  let message: { subject: string; text: string };
+  if (Object.hasOwn(schoolMailTemplates, template)) {
+    const builtin = template as SchoolMailTemplate;
+    message = { subject: schoolMailTemplates[builtin], text: text ?? schoolMailDraft(builtin) };
+  } else {
+    const saved = await findSchoolMailTemplate(template);
+    if (!saved) throw new InputError("Выбранный шаблон не найден.");
+    if (subject !== undefined && !isMailLine(subject, schoolMailSubjectLimit)) throw new InputError("Некорректная тема письма.");
+    message = { subject: subject?.trim() ?? saved.subject, text: text ?? saved.text };
+  }
+  send(res, 200, { outcomes: await sendSchoolMail(requestId, template, [...selected.values()], message) });
 }
 
 async function streamSearch(query: string, res: ServerResponse): Promise<void> {
@@ -184,13 +229,32 @@ async function streamSearch(query: string, res: ServerResponse): Promise<void> {
 }
 
 export async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
-  const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const { pathname } = url;
   if (!pathname.startsWith("/api/")) return false;
   const institutionRoute = /^\/api\/institutions\/([1-9][0-9]{0,18})$/.exec(pathname);
   const refreshRoute = /^\/api\/institutions\/([1-9][0-9]{0,18})\/refresh$/.exec(pathname);
 
   try {
-    if (pathname === "/api/school-mail/replies") {
+    if (pathname === "/api/school-mail/templates") {
+      await handleMailTemplates(req, res);
+    } else if (pathname === "/api/school-mail/history" || pathname === "/api/school-mail/reminders") {
+      if (req.method !== "GET") send(res, 405, { error: "Метод не поддерживается." });
+      else if (pathname.endsWith("/history")) {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        if (!Number.isInteger(page) || page < 1 || page > 10_000) throw new InputError("Некорректный номер страницы.");
+        send(res, 200, await listSchoolMailHistory(page));
+      } else {
+        const days = Number(url.searchParams.get("days") ?? "7");
+        if (![7, 14, 30].includes(days)) throw new InputError("Выберите срок 7, 14 или 30 дней.");
+        let schools = await listSchoolMailReminders(days);
+        if (schools.length) {
+          await readSchoolReplies();
+          schools = await listSchoolMailReminders(days);
+        }
+        send(res, 200, { schools });
+      }
+    } else if (pathname === "/api/school-mail/replies") {
       await handleSchoolMail(req, res, true);
     } else if (pathname === "/api/school-mail") {
       await handleSchoolMail(req, res);

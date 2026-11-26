@@ -13,20 +13,21 @@ for (const [address, prefix] of [
 const htmlLimit = 1_500_000;
 const mailAddress = /^[\w.!#$%&'*+/=?^`{|}~-]+@[a-z\d.-]+\.[a-z]{2,}$/i;
 
-async function readPublicHtml(url: URL): Promise<string | undefined> {
-  if (url.protocol !== "https:" || url.port || url.username || url.password ||
+export async function readPublicHtml(url: URL, allowSameOriginRedirect = false, parentSignal?: AbortSignal): Promise<string | undefined> {
+  if (parentSignal?.aborted || url.protocol !== "https:" || url.port || url.username || url.password ||
       !/^(?:[a-z\d](?:[a-z\d-]*[a-z\d])?\.)+[a-z][a-z\d-]*$/i.test(url.hostname)) return;
 
   const resolver = new Resolver({ timeout: 2000, tries: 1 });
   const addresses = await resolver.resolve4(url.hostname).catch(() => []);
-  if (!addresses.length || addresses.some((address) => nonPublic.check(address))) return;
+  if (parentSignal?.aborted || !addresses.length || addresses.some((address) => nonPublic.check(address))) return;
 
   return new Promise((resolve) => {
+    const timeout = AbortSignal.timeout(6500);
     const request = get(url, {
       agent: false,
       family: 4,
       lookup: (_host, _options, callback) => callback(null, addresses[0], 4),
-      signal: AbortSignal.timeout(6500),
+      signal: parentSignal ? AbortSignal.any([parentSignal, timeout]) : timeout,
       headers: {
         Accept: "text/html",
         "Accept-Language": "ru,en;q=0.5",
@@ -34,6 +35,13 @@ async function readPublicHtml(url: URL): Promise<string | undefined> {
       },
     }, (response) => {
       const contentType = response.headers["content-type"] ?? "";
+      if (allowSameOriginRedirect && [301, 302, 307, 308].includes(response.statusCode ?? 0)) {
+        response.destroy();
+        const location = response.headers.location;
+        const target = location && URL.canParse(location, url) ? new URL(location, url) : undefined;
+        resolve(target?.origin === url.origin ? readPublicHtml(target, false, parentSignal) : undefined);
+        return;
+      }
       if (response.statusCode !== 200 || !/^text\/html(?:\s*;|$)/i.test(contentType) ||
           Number(response.headers["content-length"]) > htmlLimit) {
         response.destroy();
@@ -51,8 +59,11 @@ async function readPublicHtml(url: URL): Promise<string | undefined> {
         } else chunks.push(chunk);
       });
       response.on("end", () => {
-        const encoding = /charset\s*=\s*["']?windows-1251/i.test(contentType) ? "windows-1251" : "utf-8";
-        resolve(new TextDecoder(encoding).decode(Buffer.concat(chunks)));
+        const body = Buffer.concat(chunks);
+        const encoding = /charset\s*=\s*["']?(?:windows-1251|cp1251)/i.test(
+          contentType + " " + body.subarray(0, 2048).toString("latin1"),
+        ) ? "windows-1251" : "utf-8";
+        resolve(new TextDecoder(encoding).decode(body));
       });
     });
     request.on("error", () => resolve(undefined));

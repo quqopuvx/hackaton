@@ -37,6 +37,12 @@ function resetMail(): void {
   mailSelectionLocked.value = false;
   mailSelection.value.clear();
 }
+
+function selectMailRecipients(ids: string[]): void {
+  if (mailSelectionLocked.value) return;
+  mailSelection.value = new Set(ids.slice(0, schoolMailLimit));
+  void refreshRegistry();
+}
 const pagePaths = { results: "/", registry: "/registry", mail: "/mail", analytics: "/analytics" } as const;
 type Page = keyof typeof pagePaths;
 
@@ -478,7 +484,7 @@ onUnmounted(() => window.removeEventListener("popstate", syncPage));
     <SchoolMailPage v-show="tab === 'mail'" :institutions="registry" :selected="mailSelection"
       :selected-schools="mailSchools" :locked="mailSelectionLocked" :loading="loadingRegistry" :error="registryError" :active="tab === 'mail'"
       :compose-request="mailComposeRequest"
-      @toggle="toggleMail" @lock="mailSelectionLocked = true" @reset="resetMail" @sent="refreshRegistry" />
+      @toggle="toggleMail" @choose-recipients="selectMailRecipients" @lock="mailSelectionLocked = true" @reset="resetMail" @sent="refreshRegistry" />
     <InstitutionEditor v-if="editing" :key="editing.id" :institution="editing" :saving="savingEdit" :error="editError"
       @close="editing = undefined" @save="saveInstitution" />
   </main>

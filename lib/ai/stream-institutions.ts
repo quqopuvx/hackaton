@@ -26,13 +26,13 @@ export async function readInstitutionCompletion(
     if (event.error) throw new Error("CheapVibeCode сообщил об ошибке во время ответа.");
     const choice = event.choices?.[0];
     if (choice?.finish_reason) finishReason = choice.finish_reason;
-    if (typeof choice?.delta?.content !== "string") return false;
+    if (typeof choice?.delta?.content !== "string") return Boolean(choice?.finish_reason);
     content += choice.delta.content;
 
-    if (arrayEnded) return false;
+    if (arrayEnded) return Boolean(choice?.finish_reason);
     if (offset < 0) {
       const prefix = /^\s*(?:```(?:json)?\s*)?(?:\{\s*"institutions"\s*:\s*)?\[/.exec(content);
-      if (!prefix) return false;
+      if (!prefix) return Boolean(choice?.finish_reason);
       offset = prefix[0].length;
     }
     for (; offset < content.length; offset++) {
@@ -58,7 +58,7 @@ export async function readInstitutionCompletion(
         }
       }
     }
-    return false;
+    return Boolean(choice?.finish_reason);
   }
 
   for await (const line of readLines(body)) {

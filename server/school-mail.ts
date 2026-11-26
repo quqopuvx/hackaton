@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import nodemailer from "nodemailer";
-import { isSingleEmail, renderSchoolMail } from "../lib/school-mail.ts";
-import type { SchoolMailOutcome, SchoolMailRecipient, SchoolMailTemplate } from "../lib/school-mail.ts";
+import { isSingleEmail, personalizeSchoolMail } from "../lib/school-mail.ts";
+import type { SchoolMailOutcome, SchoolMailRecipient } from "../lib/school-mail.ts";
 import { claimSchoolMail, findInstitution, finishSchoolMail } from "../lib/store.ts";
 
 function smtpConfig() {
@@ -24,7 +24,7 @@ export function authorizeSchoolMail(code: string): "unconfigured" | "denied" | "
 }
 
 export async function sendSchoolMail(
-  requestId: string, template: SchoolMailTemplate, recipients: SchoolMailRecipient[], draft?: string,
+  requestId: string, template: string, recipients: SchoolMailRecipient[], message: { subject: string; text: string },
 ): Promise<SchoolMailOutcome[]> {
   const config = smtpConfig();
   if (!config) throw new Error("Отправка писем ещё не настроена.");
@@ -41,7 +41,7 @@ export async function sendSchoolMail(
     if (school?.institutionType !== "school" || school.institutionEmail?.trim() !== email) {
       return { id, status: "skipped", message: "Карточка школы или адрес изменились. Обновите реестр." };
     }
-    const claimed = await claimSchoolMail(requestId, recipient, template);
+    const claimed = await claimSchoolMail(requestId, recipient, template, message.subject);
     if (claimed !== "claimed") return { id, status: claimed };
 
     let status: "sent" | "failed" | "uncertain";
@@ -50,7 +50,8 @@ export async function sendSchoolMail(
       const info = await transport.sendMail({
         from,
         to: { name: school.name, address: email },
-        ...renderSchoolMail(template, school.name, draft),
+        subject: message.subject,
+        text: personalizeSchoolMail(message.text, school.name),
       });
       status = info.accepted.length ? "sent" : "failed";
       if (status === "sent") messageId = info.messageId || null;

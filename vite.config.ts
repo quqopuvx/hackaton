@@ -6,7 +6,6 @@ import { loadLocalEnv } from "./server/env.ts";
 
 loadLocalEnv();
 
-/** API живёт в том же процессе, что и Vite: ключи LLM никогда не попадают в браузер. */
 const apiPlugin: Plugin = {
   name: "hackathon-api",
   configureServer(server) {

@@ -8,7 +8,7 @@ loadLocalEnv();
 
 const dist = resolve(process.cwd(), "dist");
 const port = Number(process.env.PORT ?? 3000);
-const host = process.env.HOST ?? "0.0.0.0";
+const host = process.env.HOST ?? "127.0.0.1";
 
 const mime: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -51,5 +51,5 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(port, host, () => {
-  console.log(`Agent Lab готов: http://localhost:${port} (провайдер: ${process.env.AI_PROVIDER || "mock"})`);
+  console.log(`Реестр учебных учреждений: http://localhost:${port}`);
 });

@@ -1,99 +1,99 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { runAgent } from "../lib/ai/agent.ts";
-import { domain } from "../config/domain.ts";
-import { addItem, listItems, removeItem, setItemStatus } from "../lib/store.ts";
-import type { ChatMessage, Item } from "../lib/types.ts";
+import { refreshInstitution, runAgent } from "../lib/ai/agent.ts";
+import { institutionTypeLabels, type InstitutionType } from "../lib/institution-types.ts";
+import { listInstitutions, normalize, updateInstitution } from "../lib/store.ts";
+import type { InstitutionEdits, SearchEvent } from "../lib/types.ts";
 
-interface ApiResult {
-  status: number;
-  body: unknown;
-}
+class InputError extends Error {}
 
-const ok = (body: unknown, status = 200): ApiResult => ({ status, body });
-const fail = (error: string, status = 400): ApiResult => ({ status, body: { error } });
-
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function readBody(req: IncomingMessage, limit: number): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let size = 0;
-  for await (const chunk of req) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.length;
-    if (size > 1_000_000) throw new Error("Слишком большой запрос (лимит 1 MB)");
+    if (size > limit) throw new InputError("Слишком большой запрос.");
     chunks.push(buffer);
   }
-  const raw = Buffer.concat(chunks).toString("utf8");
-  if (!raw) return {};
+
+  let body: unknown;
   try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("not an object");
-    }
-    return parsed as Record<string, unknown>;
+    body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch {
-    throw new Error("Ожидается корректный JSON-объект");
+    throw new InputError("Ожидается корректный JSON.");
   }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new InputError("Ожидается JSON-объект.");
+  }
+  return body as Record<string, unknown>;
 }
 
-function normalizeMessages(value: unknown): ChatMessage[] {
-  if (!Array.isArray(value)) throw new Error("Поле messages должно быть массивом");
-  if (value.length > 40) throw new Error("Слишком много сообщений (максимум 40)");
-  return value.map((raw, index) => {
-    if (!raw || typeof raw !== "object") throw new Error(`Сообщение #${index} некорректно`);
-    const message = raw as Record<string, unknown>;
-    if (message.role !== "user" && message.role !== "assistant") {
-      throw new Error(`Сообщение #${index}: role должен быть user или assistant`);
-    }
-    if (typeof message.content !== "string") {
-      throw new Error(`Сообщение #${index}: content должен быть строкой`);
-    }
-    return { role: message.role, content: message.content.slice(0, 8000) };
-  });
+async function readQuery(req: IncomingMessage): Promise<string> {
+  const { query } = await readBody(req, 4096);
+  if (typeof query !== "string" || query.trim().length > 400 || !normalize(query)) {
+    throw new InputError("Укажите запрос длиной до 400 символов.");
+  }
+  return query.trim();
 }
 
-function statusValue(value: unknown): Item["status"] {
-  if (value !== "new" && value !== "in_progress" && value !== "done") {
-    throw new Error("Статус должен быть new, in_progress или done");
-  }
-  return value;
+const requiredFields = { name: "Название", city: "Город", region: "Регион" } as const;
+const optionalFields = {
+  leaderName: "Руководитель",
+  institutionEmail: "Почта",
+  institutionPhone: "Телефон",
+} as const;
+
+function isSourceUrl(value: string): boolean {
+  return URL.canParse(value) && ["http:", "https:"].includes(new URL(value).protocol);
 }
 
-async function route(req: IncomingMessage, pathname: string): Promise<ApiResult> {
-  if (pathname === "/api/health") {
-    return ok({ ok: true, provider: process.env.AI_PROVIDER || "mock", caseTitle: domain.caseTitle });
-  }
+async function readInstitutionEdits(req: IncomingMessage): Promise<InstitutionEdits> {
+  const body = await readBody(req, 64 * 1024);
+  const edits: InstitutionEdits = {};
 
-  if (pathname === "/api/agent") {
-    if (req.method === "GET") return ok({ provider: process.env.AI_PROVIDER || "mock" });
-    if (req.method !== "POST") return fail("Метод не поддерживается", 405);
-    const body = await readJson(req);
-    return ok(await runAgent(normalizeMessages(body.messages)));
-  }
-
-  if (pathname === "/api/items") {
-    if (req.method === "GET") return ok({ items: listItems() });
-
-    if (req.method === "POST") {
-      const body = await readJson(req);
-      if (typeof body.title !== "string") throw new Error("Нужно поле title (строка)");
-      return ok({ item: addItem(body.title) }, 201);
+  for (const key of Object.keys(requiredFields) as (keyof typeof requiredFields)[]) {
+    if (!Object.hasOwn(body, key)) continue;
+    const value = body[key];
+    if (typeof value !== "string" || !value.trim() || value.trim().length > 500 ||
+        value.includes("\0") || !normalize(value)) {
+      throw new InputError(`Поле «${requiredFields[key]}» должно содержать от 1 до 500 символов.`);
     }
-
-    if (req.method === "PATCH" || req.method === "DELETE") {
-      const body = await readJson(req);
-      if (typeof body.id !== "string" || !body.id) throw new Error("Нужно поле id");
-      if (req.method === "DELETE") return ok({ removed: removeItem(body.id) });
-      const item = setItemStatus(body.id, statusValue(body.status));
-      if (!item) return fail("Сущность не найдена", 404);
-      return ok({ item });
-    }
-
-    return fail("Метод не поддерживается", 405);
+    edits[key] = value.trim();
   }
 
-  return fail("Неизвестный endpoint", 404);
+  for (const key of Object.keys(optionalFields) as (keyof typeof optionalFields)[]) {
+    if (!Object.hasOwn(body, key)) continue;
+    const value = body[key];
+    if (value !== null && (typeof value !== "string" || value.trim().length > 500 || value.includes("\0"))) {
+      throw new InputError(`Поле «${optionalFields[key]}» должно содержать не более 500 символов.`);
+    }
+    edits[key] = value?.trim() || null;
+  }
+
+  if (Object.hasOwn(body, "institutionType")) {
+    const value = body.institutionType;
+    if (value !== null && (typeof value !== "string" || !Object.hasOwn(institutionTypeLabels, value))) {
+      throw new InputError("Выберите тип учреждения из списка.");
+    }
+    edits.institutionType = value as InstitutionType | null;
+  }
+
+  if (Object.hasOwn(body, "sourceUrls")) {
+    const value = body.sourceUrls;
+    if (!Array.isArray(value) || value.some((url: unknown) =>
+      typeof url !== "string" || url.includes("\0") || !isSourceUrl(url.trim()))) {
+      throw new InputError("Укажите полные ссылки на источники, начинающиеся с http:// или https://.");
+    }
+    edits.sourceUrls = [...new Set(value.map((url: string) => url.trim()))];
+  }
+
+  if (!Object.keys(edits).length || Object.keys(body).some((key) => !Object.hasOwn(edits, key))) {
+    throw new InputError("Укажите поля учреждения для изменения.");
+  }
+  return edits;
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+function send(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
@@ -101,16 +101,80 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-/** Возвращает true, если запрос был обработан как API. */
+async function streamSearch(query: string, res: ServerResponse): Promise<void> {
+  res.writeHead(200, {
+    "Content-Type": "application/x-ndjson; charset=utf-8",
+    "Cache-Control": "no-store, no-transform",
+    "X-Accel-Buffering": "no",
+  });
+  res.flushHeaders();
+  const emit = (event: SearchEvent) => {
+    if (!res.destroyed) res.write(JSON.stringify(event) + "\n");
+  };
+  const heartbeat = setInterval(() => {
+    if (!res.destroyed) res.write("\n");
+  }, 15_000);
+  try {
+    const result = await runAgent(query, (institution, checkingContacts) =>
+      emit({ type: "institution", institution, checkingContacts }));
+    emit({ type: "complete", result });
+  } catch (error) {
+    const databaseError = error instanceof Error && "code" in error;
+    if (databaseError) console.error(error);
+    emit({
+      type: "error",
+      message: databaseError ? "Не удалось прочитать или сохранить данные в PostgreSQL."
+        : error instanceof Error ? error.message : "Ошибка сервера.",
+    });
+  } finally {
+    clearInterval(heartbeat);
+    res.end();
+  }
+}
+
 export async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
   const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
   if (!pathname.startsWith("/api/")) return false;
+  const institutionRoute = /^\/api\/institutions\/([1-9][0-9]{0,18})$/.exec(pathname);
+  const refreshRoute = /^\/api\/institutions\/([1-9][0-9]{0,18})\/refresh$/.exec(pathname);
 
   try {
-    const result = await route(req, pathname);
-    sendJson(res, result.status, result.body);
+    if (pathname === "/api/institutions" && req.method === "GET") {
+      send(res, 200, { institutions: await listInstitutions() });
+    } else if (institutionRoute && req.method === "PATCH") {
+      const id = institutionRoute[1];
+      const edits = await readInstitutionEdits(req);
+      const institution = BigInt(id) <= 9223372036854775807n ? await updateInstitution(id, edits) : undefined;
+      if (institution) send(res, 200, { institution });
+      else send(res, 404, { error: "Учреждение не найдено." });
+    } else if (refreshRoute && req.method === "POST") {
+      const id = refreshRoute[1];
+      const result = BigInt(id) <= 9223372036854775807n ? await refreshInstitution(id) : undefined;
+      if (result === "conflict") {
+        send(res, 409, { error: "Название или местоположение изменились во время поиска. Запустите обновление ещё раз." });
+      } else if (result) {
+        send(res, 200, result);
+      } else {
+        send(res, 404, { error: "Учреждение не найдено." });
+      }
+    } else if (pathname === "/api/agent" && req.method === "POST") {
+      const query = await readQuery(req);
+      if (req.headers.accept?.includes("application/x-ndjson")) await streamSearch(query, res);
+      else send(res, 200, await runAgent(query));
+    } else if (pathname === "/api/institutions" || pathname === "/api/agent" || institutionRoute || refreshRoute) {
+      send(res, 405, { error: "Метод не поддерживается." });
+    } else {
+      send(res, 404, { error: "Маршрут не найден." });
+    }
   } catch (error) {
-    sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    if (error instanceof Error && "code" in error) {
+      console.error(error);
+      send(res, 500, { error: "Не удалось прочитать или сохранить данные в PostgreSQL." });
+    } else {
+      send(res, error instanceof InputError ? 400 : 503, {
+        error: error instanceof Error ? error.message : "Ошибка сервера.",
+      });
+    }
   }
   return true;
 }

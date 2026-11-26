@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-/** Минимальный загрузчик .env.local / .env без внешних зависимостей. */
 export function loadLocalEnv(): void {
   for (const file of [".env.local", ".env"]) {
     let content = "";

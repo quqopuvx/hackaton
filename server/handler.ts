@@ -1,4 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { DatabaseError } from "pg";
+import { authorizeSchoolMail, sendSchoolMail } from "./school-mail.ts";
+import { readSchoolReplies } from "./school-replies.ts";
+import { isSingleEmail, schoolMailLimit, schoolMailTemplates, schoolMailTextLimit, type SchoolMailRecipient, type SchoolMailTemplate } from "../lib/school-mail.ts";
 import { refreshInstitution, runAgent } from "../lib/ai/agent.ts";
 import { institutionTypeLabels, type InstitutionType } from "../lib/institution-types.ts";
 import { listInstitutions, normalize, updateInstitution } from "../lib/store.ts";
@@ -101,6 +105,53 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+async function handleSchoolMail(req: IncomingMessage, res: ServerResponse, replies = false): Promise<void> {
+  if (req.method !== "POST") {
+    send(res, 405, { error: "Метод не поддерживается." });
+    return;
+  }
+  if (req.headers["content-type"]?.split(";")[0].trim().toLowerCase() !== "application/json") {
+    throw new InputError("Ожидается application/json.");
+  }
+  if (replies) {
+    const fetchSite = req.headers["sec-fetch-site"];
+    if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+      send(res, 403, { error: "Откройте вкладку ответов на странице приложения." });
+      return;
+    }
+    send(res, 200, { replies: await readSchoolReplies() });
+    return;
+  }
+  const { requestId, template, recipients, accessCode, text } = await readBody(req, 32 * 1024);
+  const access = authorizeSchoolMail(typeof accessCode === "string" ? accessCode : "");
+  if (access === "unconfigured") {
+    send(res, 503, { error: "Почта ещё не настроена. Обратитесь к администратору." });
+    return;
+  }
+  if (access === "denied") {
+    send(res, 403, { error: "Проверьте код доступа к почте." });
+    return;
+  }
+  if (text !== undefined && (typeof text !== "string" || !text.trim() || text.length > schoolMailTextLimit || text.includes("\0"))) {
+    throw new InputError(`Текст письма должен содержать от 1 до ${schoolMailTextLimit} символов.`);
+  }
+  if (typeof requestId !== "string" || !/^[a-f\d]{8}-[a-f\d]{4}-4[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i.test(requestId) ||
+      typeof template !== "string" || !Object.hasOwn(schoolMailTemplates, template) ||
+      !Array.isArray(recipients) || recipients.length === 0 || recipients.length > schoolMailLimit) {
+    throw new InputError(`Выберите шаблон и от 1 до ${schoolMailLimit} школ.`);
+  }
+  const selected = new Map<string, SchoolMailRecipient>();
+  for (const recipient of recipients) {
+    const { id, email } = recipient ?? {};
+    if (typeof id !== "string" || !/^[1-9][0-9]{0,18}$/.test(id) || BigInt(id) > 9223372036854775807n ||
+        typeof email !== "string" || !isSingleEmail(email) || selected.has(id)) {
+      throw new InputError("Проверьте список школ и их почтовые адреса.");
+    }
+    selected.set(id, { id, email });
+  }
+  send(res, 200, { outcomes: await sendSchoolMail(requestId, template as SchoolMailTemplate, [...selected.values()], text) });
+}
+
 async function streamSearch(query: string, res: ServerResponse): Promise<void> {
   res.writeHead(200, {
     "Content-Type": "application/x-ndjson; charset=utf-8",
@@ -119,7 +170,7 @@ async function streamSearch(query: string, res: ServerResponse): Promise<void> {
       emit({ type: "institution", institution, checkingContacts }));
     emit({ type: "complete", result });
   } catch (error) {
-    const databaseError = error instanceof Error && "code" in error;
+    const databaseError = error instanceof DatabaseError;
     if (databaseError) console.error(error);
     emit({
       type: "error",
@@ -139,7 +190,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
   const refreshRoute = /^\/api\/institutions\/([1-9][0-9]{0,18})\/refresh$/.exec(pathname);
 
   try {
-    if (pathname === "/api/institutions" && req.method === "GET") {
+    if (pathname === "/api/school-mail/replies") {
+      await handleSchoolMail(req, res, true);
+    } else if (pathname === "/api/school-mail") {
+      await handleSchoolMail(req, res);
+    } else if (pathname === "/api/institutions" && req.method === "GET") {
       send(res, 200, { institutions: await listInstitutions() });
     } else if (institutionRoute && req.method === "PATCH") {
       const id = institutionRoute[1];
@@ -167,7 +222,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       send(res, 404, { error: "Маршрут не найден." });
     }
   } catch (error) {
-    if (error instanceof Error && "code" in error) {
+    if (error instanceof DatabaseError) {
       console.error(error);
       send(res, 500, { error: "Не удалось прочитать или сохранить данные в PostgreSQL." });
     } else {

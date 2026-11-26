@@ -2,6 +2,7 @@
 import { responseStatusLabels, type Institution, type InstitutionDetails } from "../../lib/types";
 import { institutionTypeLabels } from "../../lib/institution-types";
 import { isDirectorySource } from "../../lib/institution-sources";
+import { isSingleEmail, schoolMailLimit } from "../../lib/school-mail";
 
 type DisplayRow = InstitutionDetails & Partial<Pick<Institution, "id" | "responseStatus">> & { checkingContacts?: boolean };
 withDefaults(defineProps<{
@@ -9,9 +10,11 @@ withDefaults(defineProps<{
   placeholders: number;
   showRegion?: boolean;
   editable?: boolean;
+  mailSelection?: Set<string>;
+  mailSelectionLocked?: boolean;
   rowUpdates?: Record<string, { pending?: boolean; message?: string; error?: boolean }>;
 }>(), { showRegion: true });
-const emit = defineEmits<{ edit: [id: string]; refresh: [id: string] }>();
+const emit = defineEmits<{ edit: [id: string]; refresh: [id: string]; toggleMail: [id: string] }>();
 const columnLabels = {
   name: "Название учреждения",
   type: "Тип учреждения",
@@ -53,6 +56,15 @@ function orderedSources(sources: string[]): string[] {
           :style="{ '--row-delay': `${Math.min(index, 7) * 80}ms` }">
           <th scope="row" role="rowheader" class="col-span-2 text-base font-semibold lg:text-sm" :class="cellClass">
             {{ item.name }}
+            <label v-if="mailSelection && item.id && item.institutionType === 'school'"
+              class="mt-2 flex min-h-8 items-center gap-2 text-xs font-normal text-secondary">
+              <input type="checkbox" class="size-4 accent-accent" :checked="mailSelection.has(item.id)"
+                :aria-label="`Выбрать для письма: ${item.name}`"
+                :disabled="mailSelectionLocked || (!mailSelection.has(item.id) &&
+                  (mailSelection.size >= schoolMailLimit || !isSingleEmail(item.institutionEmail?.trim() ?? '')))"
+                @change="emit('toggleMail', item.id)" />
+              {{ isSingleEmail(item.institutionEmail?.trim() ?? '') ? "Выбрать для письма" : "Добавьте почту для отправки" }}
+            </label>
             <template v-if="editable && item.id">
               <div class="mt-1 flex flex-wrap gap-x-3">
                 <button type="button" class="min-h-11 text-left text-xs font-medium text-accent underline underline-offset-2"
@@ -113,13 +125,6 @@ function orderedSources(sources: string[]): string[] {
           <td role="cell" class="col-span-2" :class="cellClass">
             <span aria-hidden="true" :class="mobileLabelClass">{{ columnLabels.status }}</span>
             <span class="text-secondary">{{ item.responseStatus ? responseStatusLabels[item.responseStatus] : "Сохраняю…" }}</span>
-            <button
-              v-if="item.responseStatus"
-              type="button"
-              disabled
-              title="Отправка писем пока недоступна"
-              class="mt-2 block min-h-11 rounded-xl border border-line px-3 text-xs text-muted"
-            >Отправить</button>
           </td>
         </tr>
         <tr v-for="row in placeholders" :key="`placeholder-${row}`" aria-hidden="true"

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { Pool, type PoolClient } from "pg";
 import type { Institution, InstitutionDetails, InstitutionEdits } from "./types.ts";
+import type { SchoolMailOutcome, SchoolMailRecipient, SchoolMailTemplate } from "./school-mail.ts";
 import { inferInstitutionType } from "./institution-types.ts";
 
 let ready: Promise<Pool> | undefined;
@@ -83,6 +84,76 @@ export async function findInstitution(id: string): Promise<Institution | undefin
   const pool = await database();
   const result = await pool.query<Institution>(`SELECT ${fields} FROM institutions WHERE id = $1`, [id]);
   return result.rows[0];
+}
+
+type DeliveryStatus = Exclude<SchoolMailOutcome["status"], "skipped">;
+
+export async function claimSchoolMail(
+  requestId: string, recipient: SchoolMailRecipient, template: SchoolMailTemplate,
+): Promise<DeliveryStatus | "claimed"> {
+  const pool = await database();
+  const args = [requestId, recipient.id, recipient.email, template];
+  const insert = await pool.query(
+    `INSERT INTO school_mail_deliveries (request_id, institution_id, recipient, template, status)
+     VALUES ($1, $2, $3, $4, 'sending') ON CONFLICT DO NOTHING`,
+    args,
+  );
+  if (insert.rowCount) return "claimed";
+  const previous = await pool.query<{ status: DeliveryStatus }>(
+    `SELECT CASE
+       WHEN recipient <> $3 OR template <> $4 THEN 'uncertain'
+       WHEN status = 'sending' AND created_at < now() - interval '10 minutes' THEN 'uncertain'
+       ELSE status END AS status
+     FROM school_mail_deliveries WHERE request_id = $1 AND institution_id = $2`,
+    args,
+  );
+  return previous.rows[0]?.status ?? "uncertain";
+}
+
+export async function finishSchoolMail(
+  requestId: string, id: string, status: Exclude<DeliveryStatus, "sending">, messageId: string | null = null,
+): Promise<void> {
+  const pool = await database();
+  await pool.query(
+    `WITH delivery AS (
+       UPDATE school_mail_deliveries SET status = $3, message_id = $4
+       WHERE request_id = $1 AND institution_id = $2 RETURNING institution_id, status
+     )
+     UPDATE institutions SET response_status = 'awaiting_reply'
+     FROM delivery WHERE id = delivery.institution_id AND delivery.status = 'sent' AND response_status = 'not_sent'`,
+    [requestId, id, status, messageId],
+  );
+}
+
+export interface SentSchoolMail {
+  schoolId: string;
+  schoolName: string;
+  recipient: string;
+  template: SchoolMailTemplate;
+  messageId: string | null;
+  sentAt: Date;
+}
+
+export async function listSentSchoolMail(since: Date): Promise<SentSchoolMail[]> {
+  const pool = await database();
+  const { rows } = await pool.query<SentSchoolMail>(
+    `SELECT d.institution_id::text AS "schoolId", COALESCE(i.manual_edits->>'name', i.name) AS "schoolName",
+       d.recipient, d.template, d.message_id AS "messageId", d.created_at AS "sentAt"
+     FROM school_mail_deliveries d JOIN institutions i ON i.id = d.institution_id
+     WHERE d.status = 'sent' AND d.created_at >= $1 ORDER BY d.created_at DESC`,
+    [since],
+  );
+  return rows;
+}
+
+export async function markSchoolsReplied(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  const pool = await database();
+  await pool.query(
+    `UPDATE institutions SET response_status = 'replied'
+     WHERE id = ANY($1::bigint[]) AND response_status = 'awaiting_reply'`,
+    [ids],
+  );
 }
 
 export async function applyInstitutionRefresh(

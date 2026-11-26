@@ -436,6 +436,8 @@ async function searchWithTavily(
   onInstitution?: OnInstitution,
   target?: InstitutionTarget,
 ): Promise<Discovery> {
+  class TavilyNetworkError extends Error {}
+
   if (provider === "cheapvibecode" && !process.env.CHEAPVIBECODE_API_KEY) {
     throw new Error("Добавьте CHEAPVIBECODE_API_KEY в .env.local.");
   }
@@ -469,12 +471,17 @@ async function searchWithTavily(
         }),
       });
     } catch {
-      throw new Error("Tavily не ответил на запрос веб-поиска.");
+      throw new TavilyNetworkError("Tavily не ответил на запрос веб-поиска.");
     }
     if (response.status === 429) throw await rateLimitError(response, "Tavily");
     if (!response.ok) throw new Error(`Tavily вернул HTTP ${response.status}. Проверьте ключ и лимиты веб-поиска.`);
 
-    const payload = await response.json() as {
+    const payload = await response.json().catch((error: unknown) => {
+      if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+        throw new TavilyNetworkError("Tavily не успел передать результаты веб-поиска.");
+      }
+      throw new Error("Tavily вернул повреждённый или неполный ответ.");
+    }) as {
       results?: Array<{ url?: string; title?: string; content?: string; raw_content?: string | null }>;
     };
     if (!Array.isArray(payload.results)) throw new Error("Tavily вернул выдачу в неподдерживаемом формате.");
@@ -577,12 +584,13 @@ async function searchWithTavily(
     return { institutions: verified ? [verified] : [] };
   }
 
+  const officialQuery = `${query} Россия официальный сайт контакты телефон электронная почта руководитель директор`;
   const searches = await Promise.allSettled([
-    searchSources(`${query} Россия официальный сайт контакты телефон электронная почта руководитель директор`, 8),
+    searchSources(officialQuery, 8),
     searchSources(`${query} Россия официальный реестр образовательных организаций перечень учреждений департамента образования`,
       4, 25_000, true),
   ]);
-  const failures = searches.flatMap((search) => search.status === "rejected" ? [search.reason] : []);
+  const searchFailures = searches.flatMap((search) => search.status === "rejected" ? [search.reason] : []);
   const uniqueSources = new Map<string, SourceExcerpt>();
   for (const search of searches.slice().reverse()) {
     if (search.status !== "fulfilled") continue;
@@ -590,21 +598,27 @@ async function searchWithTavily(
       if (!uniqueSources.has(source.url)) uniqueSources.set(source.url, source);
     }
   }
+  if (!uniqueSources.size && searchFailures.some((error) => error instanceof TavilyNetworkError)) {
+    for (const source of await searchSources(officialQuery, 5)) {
+      if (!uniqueSources.has(source.url)) uniqueSources.set(source.url, source);
+    }
+  }
+  if (!uniqueSources.size) {
+    if (searchFailures.length) throw searchFailures[0];
+    return { institutions: [] };
+  }
   const sources = [...uniqueSources.values()].sort((a, b) =>
     Number(isDirectorySource(a.url, a.title)) - Number(isDirectorySource(b.url, b.title)),
   );
-  if (!sources.length) {
-    if (failures.length) throw failures[0];
-    return { institutions: [] };
-  }
 
   const extractionInstructions = `${instructions}
 Веб-поиск уже выполнен. Используй только переданные источники и их выдержки.
 В источнике должно быть явно указано каждое извлечённое сведение.
 Включай только учреждения, для которых источники подтверждают все критерии запроса.
 Различай вузы, колледжи СПО и школы. Включай отделение или колледж при вузе только при наличии отдельного названия и подтверждения нужного профиля.
-Копируй адреса источников из поля url без изменений. Верни объект с массивом institutions.`;
+Верни объект с массивом institutions.`;
   const candidates = new Map<string, SearchProgress>();
+  const failures: unknown[] = [];
 
   async function checkContacts(entry: SearchProgress): Promise<void> {
     const candidate = entry.institution;
@@ -636,17 +650,36 @@ async function searchWithTavily(
     };
 
     try {
-      const input = JSON.stringify({ query, sources: batch });
+      const indexedSources = new Map(batch.map((source, index) => [`S${index + 1}`, source]));
+      const inputSources = provider === "cheapvibecode"
+        ? [...indexedSources].map(([id, { url, ...source }]) => ({ id, site: sourceHost(url), ...source }))
+        : batch;
+      const input = JSON.stringify({ query, sources: inputSources });
+      const decodeSourceReferences = (record: unknown): unknown => {
+        if (!record || typeof record !== "object" || Array.isArray(record)) return record;
+        const value = record as Record<string, unknown>;
+        const lookup = (reference: unknown) => typeof reference === "string" ? indexedSources.get(reference.trim()) : undefined;
+        const source = lookup(value.sourceUrl);
+        const name = field(value.name);
+        return {
+          ...value,
+          sourceUrl: source && name && containsInstitutionName(source, name) ? source.url : null,
+          leaderSourceUrl: lookup(value.leaderSourceUrl)?.url ?? null,
+          emailSourceUrl: lookup(value.emailSourceUrl)?.url ?? null,
+          phoneSourceUrl: lookup(value.phoneSourceUrl)?.url ?? null,
+        };
+      };
       const raw = provider === "cheapvibecode"
         ? await extractWithCheapVibeCode(
-          `${extractionInstructions}\nВерни максимум четыре учреждения из этой партии источников.`,
+          `${extractionInstructions}\nВ полях sourceUrl, leaderSourceUrl, emailSourceUrl и phoneSourceUrl используй только ID из поля id, например "S1". Полные URL не выводи. Название учреждения скопируй из выдержки. Верни максимум четыре учреждения.`,
           input,
-          (record) => validateInstitutions([record], knownUrls, true, batch).forEach(register),
+          (record) => validateInstitutions([decodeSourceReferences(record)], knownUrls, true, batch).forEach(register),
         )
-        : await extractWithGigaChat(extractionInstructions, input, resultFormat.schema);
+        : await extractWithGigaChat(`${extractionInstructions}\nКопируй адреса источников из поля url без изменений.`, input, resultFormat.schema);
       const institutions = readInstitutions(raw);
       if (!institutions) throw new Error("Модель вернула учреждения в неподдерживаемом формате.");
-      validateInstitutions(institutions, knownUrls, false, batch).forEach(register);
+      const records = provider === "cheapvibecode" ? institutions.map(decodeSourceReferences) : institutions;
+      validateInstitutions(records, knownUrls, false, batch).forEach(register);
     } catch (error) {
       failures.push(error);
     }
@@ -667,7 +700,7 @@ async function searchWithTavily(
   if (!candidates.size && failures.length) throw failures[0];
   return {
     institutions: [...candidates.values()].map((entry) => entry.institution),
-    ...(failures.length ? { partial: true } : {}),
+    ...(searchFailures.length || failures.length ? { partial: true } : {}),
   };
 }
 
@@ -828,7 +861,12 @@ function validateInstitutions(
 }
 
 export function runAgent(query: string, onInstitution?: OnInstitution): Promise<SearchResult> {
-  const queryKey = `institution-directory:v2:${normalize(query)}`;
+  const normalizedQuery = normalize(query);
+  const universitySearch = /^(?:(?:найди|покажи|перечисли) )?(?:все )?(?:университеты|вузы)(?: |$)/u.test(normalizedQuery) &&
+    !/(?:^| )(?:и|или|плюс)(?: |$)/u.test(normalizedQuery);
+  const matchesRequestedType = (institution: InstitutionDetails) =>
+    !universitySearch || institution.institutionType === "university";
+  const queryKey = `institution-directory:v2:${normalizedQuery}`;
   const pending = inFlight.get(queryKey);
   if (pending) {
     if (!onInstitution) return pending.result;
@@ -840,6 +878,7 @@ export function runAgent(query: string, onInstitution?: OnInstitution): Promise<
   const previews = new Map<string, SearchProgress>();
   const listeners = new Set(onInstitution ? [onInstitution] : []);
   const publish: OnInstitution = (institution, checkingContacts) => {
+    if (!matchesRequestedType(institution)) return;
     const key = institutionKey(institution);
     const previous = previews.get(key);
     if (previous?.checkingContacts === checkingContacts &&
@@ -848,11 +887,11 @@ export function runAgent(query: string, onInstitution?: OnInstitution): Promise<
     listeners.forEach((listener) => listener(institution, checkingContacts));
   };
   const search = (async () => {
-    const cached = await findSavedSearch(queryKey);
-    if (cached) return { institutions: cached, cached: true };
+    const cached = (await findSavedSearch(queryKey))?.filter(matchesRequestedType);
+    if (cached?.length) return { institutions: cached, cached: true };
 
     const found = await searchWeb(query, publish);
-    const institutions = await saveSearch(queryKey, found.institutions, !found.partial);
+    const institutions = await saveSearch(queryKey, found.institutions.filter(matchesRequestedType), !found.partial);
     const arrival = new Map([...previews.keys()].map((key, index) => [key, index]));
     institutions.sort((a, b) =>
       (arrival.get(institutionKey(a)) ?? Infinity) - (arrival.get(institutionKey(b)) ?? Infinity),

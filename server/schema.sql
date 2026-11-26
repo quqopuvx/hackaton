@@ -23,3 +23,15 @@ CREATE TABLE IF NOT EXISTS institution_searches (
   query_key text PRIMARY KEY,
   institution_ids bigint[] NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS school_mail_deliveries (
+  request_id uuid NOT NULL,
+  institution_id bigint NOT NULL REFERENCES institutions(id),
+  recipient text NOT NULL,
+  template text NOT NULL,
+  status text NOT NULL CHECK (status IN ('sending', 'sent', 'failed', 'uncertain')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (request_id, institution_id)
+);
+
+ALTER TABLE school_mail_deliveries ADD COLUMN IF NOT EXISTS message_id text;

@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { domain } from "../config/domain";
 import { institutionTypeLabels } from "../lib/institution-types";
 import { responseStatusLabels, type Institution, type InstitutionDetails, type InstitutionEdits, type InstitutionRefreshResult, type SearchEvent, type SearchResult } from "../lib/types";
 import { readLines } from "../lib/read-lines";
 import InstitutionEditor from "./components/InstitutionEditor.vue";
 import ItemsPanel from "./components/ItemsPanel.vue";
+import SchoolMailPage from "./components/SchoolMailPage.vue";
+import { schoolMailLimit } from "../lib/school-mail";
 import RegistryMap from "./components/RegistryMap.vue";
 import { regionByCode, registryRegionCode } from "./regions";
 
@@ -18,7 +20,45 @@ const submittedQuery = ref("");
 const results = ref<SearchResult | null>(null);
 const previews = ref<Array<InstitutionDetails & { checkingContacts: boolean }>>([]);
 const registry = ref<Institution[]>([]);
-const tab = ref<"results" | "registry">("results");
+const mailSelection = ref(new Set<string>());
+const mailSelectionLocked = ref(false);
+const mailComposeRequest = ref(0);
+const mailSchools = computed(() => registry.value.filter((item) => mailSelection.value.has(item.id)));
+
+function toggleMail(id: string): void {
+  if (mailSelectionLocked.value) return;
+  if (mailSelection.value.has(id)) mailSelection.value.delete(id);
+  else if (mailSelection.value.size < schoolMailLimit) mailSelection.value.add(id);
+}
+
+function resetMail(): void {
+  mailSelectionLocked.value = false;
+  mailSelection.value.clear();
+}
+const pagePaths = { results: "/", registry: "/registry", mail: "/mail" } as const;
+type Page = keyof typeof pagePaths;
+
+function currentPage(): Page {
+  const path = window.location.pathname.replace(/\/$/, "");
+  if (path === pagePaths.mail) return "mail";
+  if (path === pagePaths.registry) return "registry";
+  return "results";
+}
+
+const tab = ref<Page>(currentPage());
+
+function syncPage(): void {
+  tab.value = currentPage();
+}
+
+function navigate(event: MouseEvent, page: Page, openComposer = false): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  if (openComposer) mailComposeRequest.value++;
+  if (tab.value === page) return;
+  window.history.pushState(null, "", pagePaths[page]);
+  syncPage();
+}
 const registryOrder = ref<"asc" | "desc">("asc");
 const selectedRegion = ref("");
 const registryQuery = ref("");
@@ -221,7 +261,11 @@ async function search(prompt = query.value): Promise<void> {
   }
 }
 
-onMounted(refreshRegistry);
+onMounted(() => {
+  window.addEventListener("popstate", syncPage);
+  void refreshRegistry();
+});
+onUnmounted(() => window.removeEventListener("popstate", syncPage));
 </script>
 
 <template>
@@ -231,26 +275,30 @@ onMounted(refreshRegistry);
       <p class="mt-2 max-w-2xl text-sm leading-relaxed text-secondary">{{ domain.caseDescription }}</p>
     </header>
 
-    <nav class="grid shrink-0 grid-cols-2 border-b border-line sm:flex sm:gap-3" aria-label="Просмотр учреждений">
-      <button
+    <nav class="grid shrink-0 grid-cols-3 border-b border-line sm:flex sm:gap-3" aria-label="Разделы приложения">
+      <a
         id="results-tab"
-        type="button"
-        :aria-pressed="tab === 'results'"
-        class="min-h-11 min-w-0 border-b-2 px-2 py-1 text-sm font-semibold sm:px-3"
+        :href="pagePaths.results"
+        :aria-current="tab === 'results' ? 'page' : undefined"
+        class="flex min-h-11 min-w-0 items-center justify-center border-b-2 px-2 py-1 text-center text-sm font-semibold sm:px-3"
         :class="tab === 'results' ? 'border-accent text-accent' : 'border-transparent text-secondary'"
-        @click="tab = 'results'"
-      >Результаты поиска</button>
-      <button
+        @click="navigate($event, 'results')"
+      >Результаты поиска</a>
+      <a
         id="registry-tab"
-        type="button"
-        :aria-pressed="tab === 'registry'"
-        class="min-h-11 min-w-0 border-b-2 px-2 py-1 text-sm font-semibold sm:px-3"
+        :href="pagePaths.registry"
+        :aria-current="tab === 'registry' ? 'page' : undefined"
+        class="flex min-h-11 min-w-0 items-center justify-center border-b-2 px-2 py-1 text-center text-sm font-semibold sm:px-3"
         :class="tab === 'registry' ? 'border-accent text-accent' : 'border-transparent text-secondary'"
-        @click="tab = 'registry'"
-      >Весь реестр<span v-if="registry.length"> ({{ registry.length }})</span></button>
+        @click="navigate($event, 'registry')"
+      >Весь реестр<span v-if="registry.length">&nbsp;({{ registry.length }})</span></a>
+      <a id="mail-tab" :href="pagePaths.mail" :aria-current="tab === 'mail' ? 'page' : undefined"
+        class="flex min-h-11 items-center justify-center border-b-2 px-2 py-1 text-sm font-semibold sm:px-3"
+        :class="tab === 'mail' ? 'border-accent text-accent' : 'border-transparent text-secondary'"
+        @click="navigate($event, 'mail')">Почта</a>
     </nav>
 
-    <section :key="tab" :aria-labelledby="`${tab}-tab`" tabindex="0"
+    <section v-if="tab !== 'mail'" :key="tab" :aria-labelledby="`${tab}-tab`" tabindex="0"
       class="min-h-0 w-full min-w-0 flex-1 overflow-y-auto pt-4 pb-5 [scrollbar-gutter:stable] focus-visible:outline-accent sm:pt-5">
       <form v-if="tab === 'results'" class="rounded-2xl border border-line bg-surface p-4 sm:rounded-[2rem] sm:p-6" @submit.prevent="search()">
         <label for="search-query" class="text-sm font-semibold">Что найти?</label>
@@ -343,6 +391,8 @@ onMounted(refreshRegistry);
         </div>
         <div class="mt-3 flex min-h-11 flex-wrap items-center justify-between gap-x-4 gap-y-1 text-sm text-secondary">
           <p aria-live="polite">Показано {{ visibleRegistryCount }} из {{ registry.length }}</p>
+          <a v-if="mailSelection.size" :href="pagePaths.mail" class="inline-flex min-h-11 items-center font-medium text-accent"
+            @click="navigate($event, 'mail', true)">К письмам ({{ mailSelection.size }})</a>
           <button v-if="filtersActive" type="button" class="min-h-11 text-sm font-medium text-accent"
             @click="resetRegistryFilters">Сбросить фильтры</button>
         </div>
@@ -358,10 +408,16 @@ onMounted(refreshRegistry);
             {{ group.region }} <span class="ml-1 text-sm font-normal text-secondary">· {{ group.items.length }}</span>
           </h2>
           <ItemsPanel :items="group.items" :placeholders="0" :show-region="false" :row-updates="rowUpdates" editable
-            @edit="editInstitution" @refresh="refreshRegistryInstitution" />
+            :mail-selection="mailSelection"
+            :mail-selection-locked="mailSelectionLocked"
+            @toggle-mail="toggleMail" @edit="editInstitution" @refresh="refreshRegistryInstitution" />
         </section>
       </div>
     </section>
+    <SchoolMailPage v-show="tab === 'mail'" :institutions="registry" :selected="mailSelection"
+      :selected-schools="mailSchools" :locked="mailSelectionLocked" :loading="loadingRegistry" :error="registryError" :active="tab === 'mail'"
+      :compose-request="mailComposeRequest"
+      @toggle="toggleMail" @lock="mailSelectionLocked = true" @reset="resetMail" @sent="refreshRegistry" />
     <InstitutionEditor v-if="editing" :key="editing.id" :institution="editing" :saving="savingEdit" :error="editError"
       @close="editing = undefined" @save="saveInstitution" />
   </main>

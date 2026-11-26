@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { domain } from "../config/domain";
 import { institutionTypeLabels } from "../lib/institution-types";
 import { responseStatusLabels, type Institution, type InstitutionDetails, type InstitutionEdits, type InstitutionRefreshResult, type SearchEvent, type SearchResult } from "../lib/types";
@@ -8,10 +8,12 @@ import InstitutionEditor from "./components/InstitutionEditor.vue";
 import ItemsPanel from "./components/ItemsPanel.vue";
 import SchoolMailPage from "./components/SchoolMailPage.vue";
 import { schoolMailLimit } from "../lib/school-mail";
+import MailAnalytics from "./components/MailAnalytics.vue";
 import RegistryMap from "./components/RegistryMap.vue";
 import { regionByCode, registryRegionCode } from "./regions";
 
 const query = ref("");
+const searchInput = ref<HTMLInputElement>();
 const busy = ref(false);
 const loadingRegistry = ref(true);
 const searchError = ref("");
@@ -35,17 +37,19 @@ function resetMail(): void {
   mailSelectionLocked.value = false;
   mailSelection.value.clear();
 }
-const pagePaths = { results: "/", registry: "/registry", mail: "/mail" } as const;
+const pagePaths = { results: "/", registry: "/registry", mail: "/mail", analytics: "/analytics" } as const;
 type Page = keyof typeof pagePaths;
 
 function currentPage(): Page {
   const path = window.location.pathname.replace(/\/$/, "");
+  if (path === pagePaths.analytics) return "analytics";
   if (path === pagePaths.mail) return "mail";
   if (path === pagePaths.registry) return "registry";
   return "results";
 }
 
 const tab = ref<Page>(currentPage());
+const tabPanel = ref<HTMLElement>();
 
 function syncPage(): void {
   tab.value = currentPage();
@@ -55,6 +59,10 @@ function navigate(event: MouseEvent, page: Page, openComposer = false): void {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
   event.preventDefault();
   if (openComposer) mailComposeRequest.value++;
+  goToPage(page);
+}
+
+function goToPage(page: Page): void {
   if (tab.value === page) return;
   window.history.pushState(null, "", pagePaths[page]);
   syncPage();
@@ -65,6 +73,7 @@ const registryQuery = ref("");
 const selectedCity = ref("");
 const selectedType = ref("");
 const selectedStatus = ref("");
+const selectedEmail = ref<"" | "present" | "missing">("");
 const editing = ref<Institution>();
 const savingEdit = ref(false);
 const editError = ref("");
@@ -101,7 +110,7 @@ const cities = computed(() => {
   return [...names.values()].sort(alphabet.compare);
 });
 const filtersActive = computed(() =>
-  Boolean(registryQuery.value.trim() || selectedRegion.value || selectedCity.value || selectedType.value || selectedStatus.value),
+  Boolean(registryQuery.value.trim() || selectedRegion.value || selectedCity.value || selectedType.value || selectedStatus.value || selectedEmail.value),
 );
 const visibleRegistryGroups = computed(() => {
   const terms = filterText(registryQuery.value).split(/\s+/).filter(Boolean);
@@ -112,6 +121,7 @@ const visibleRegistryGroups = computed(() => {
       if (city && filterText(item.city) !== city) return false;
       if (selectedType.value && (item.institutionType ?? "unknown") !== selectedType.value) return false;
       if (selectedStatus.value && item.responseStatus !== selectedStatus.value) return false;
+      if (selectedEmail.value && Boolean(item.institutionEmail?.trim()) !== (selectedEmail.value === "present")) return false;
       if (!terms.length) return true;
       const text = filterText([
         item.name, item.city, item.region, group.region, item.leaderName, item.institutionEmail, item.institutionPhone,
@@ -125,6 +135,7 @@ const visibleRegistryCount = computed(() => visibleRegistryGroups.value.reduce((
 const rows = computed(() => results.value?.institutions ?? previews.value);
 const placeholders = computed(() => tab.value === "results" && busy.value && !results.value && !searchError.value
   ? Math.max(1, 3 - previews.value.length) : 0);
+const centerSearch = computed(() => !busy.value && !rows.value.length);
 let registryRequest = 0;
 
 async function readResponse<T>(response: Response): Promise<T> {
@@ -155,6 +166,21 @@ function resetRegistryFilters(): void {
   selectedCity.value = "";
   selectedType.value = "";
   selectedStatus.value = "";
+  selectedEmail.value = "";
+}
+
+async function openRegistry(filters: {
+  status?: Institution["responseStatus"];
+  region?: string;
+  email?: "present" | "missing";
+}): Promise<void> {
+  resetRegistryFilters();
+  selectedStatus.value = filters.status ?? "";
+  selectedRegion.value = filters.region ?? "";
+  selectedEmail.value = filters.email ?? "";
+  goToPage("registry");
+  await nextTick();
+  tabPanel.value?.focus();
 }
 
 function editInstitution(id: string): void {
@@ -213,6 +239,15 @@ async function saveInstitution(edits: InstitutionEdits): Promise<void> {
   }
 }
 
+function clearSearch(): void {
+  if (busy.value) return;
+  query.value = "";
+  submittedQuery.value = "";
+  searchError.value = "";
+  results.value = null;
+  searchInput.value?.focus();
+}
+
 async function search(prompt = query.value): Promise<void> {
   const value = prompt.trim();
   if (!value || busy.value) return;
@@ -221,8 +256,8 @@ async function search(prompt = query.value): Promise<void> {
   searchError.value = "";
   results.value = null;
   previews.value = [];
-  tab.value = "results";
   busy.value = true;
+  tabPanel.value?.scrollTo({ top: 0 });
   try {
     const response = await fetch("/api/agent", {
       method: "POST",
@@ -275,7 +310,7 @@ onUnmounted(() => window.removeEventListener("popstate", syncPage));
       <p class="mt-2 max-w-2xl text-sm leading-relaxed text-secondary">{{ domain.caseDescription }}</p>
     </header>
 
-    <nav class="grid shrink-0 grid-cols-3 border-b border-line sm:flex sm:gap-3" aria-label="Разделы приложения">
+    <nav class="grid shrink-0 grid-cols-4 border-b border-line sm:flex sm:gap-3" aria-label="Разделы приложения">
       <a
         id="results-tab"
         :href="pagePaths.results"
@@ -296,65 +331,83 @@ onUnmounted(() => window.removeEventListener("popstate", syncPage));
         class="flex min-h-11 items-center justify-center border-b-2 px-2 py-1 text-sm font-semibold sm:px-3"
         :class="tab === 'mail' ? 'border-accent text-accent' : 'border-transparent text-secondary'"
         @click="navigate($event, 'mail')">Почта</a>
+      <a id="analytics-tab" :href="pagePaths.analytics" :aria-current="tab === 'analytics' ? 'page' : undefined"
+        class="flex min-h-11 min-w-0 items-center justify-center border-b-2 px-2 py-1 text-center text-sm font-semibold [overflow-wrap:anywhere] sm:px-3"
+        :class="tab === 'analytics' ? 'border-accent text-accent' : 'border-transparent text-secondary'"
+        @click="navigate($event, 'analytics')">Аналитика</a>
     </nav>
 
-    <section v-if="tab !== 'mail'" :key="tab" :aria-labelledby="`${tab}-tab`" tabindex="0"
-      class="min-h-0 w-full min-w-0 flex-1 overflow-y-auto pt-4 pb-5 [scrollbar-gutter:stable] focus-visible:outline-accent sm:pt-5">
-      <form v-if="tab === 'results'" class="rounded-2xl border border-line bg-surface p-4 sm:rounded-[2rem] sm:p-6" @submit.prevent="search()">
-        <label for="search-query" class="text-sm font-semibold">Что найти?</label>
-        <div class="mt-3 flex flex-col gap-3 sm:flex-row">
-          <input
-            id="search-query"
-            v-model="query"
-            required
-            maxlength="400"
-            placeholder="Например, медицинские колледжи Краснодарского края"
-            class="min-h-12 w-full min-w-0 flex-1 rounded-2xl border border-line bg-canvas px-4 text-base focus-visible:outline-accent sm:w-auto sm:text-sm"
-          />
-          <button
-            type="submit"
-            :disabled="busy || !query.trim()"
-            class="min-h-12 rounded-2xl bg-accent px-7 text-sm font-semibold text-white disabled:opacity-50"
-          >
-            {{ busy ? "Ищу…" : "Найти учреждения" }}
-          </button>
+    <section v-if="tab !== 'mail'" :key="tab" ref="tabPanel" :aria-labelledby="`${tab}-tab`" tabindex="0"
+      class="min-h-0 w-full min-w-0 flex-1 overflow-y-auto pt-4 pb-5 [scrollbar-gutter:stable] focus-visible:outline-accent sm:pt-5"
+      :class="{ 'search-panel': tab === 'results' }">
+      <template v-if="tab === 'results'">
+        <div class="search-layout mx-auto w-full max-w-3xl" :class="{ 'search-layout--centered': centerSearch }">
+          <form role="search" aria-label="Поиск учреждений" @submit.prevent="search()">
+            <label for="search-query" class="sr-only">Поиск учреждений</label>
+            <div class="flex min-h-14 items-center gap-2 rounded-full border border-line bg-surface py-1 pr-1.5 pl-4 shadow-sm
+              focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15 sm:pl-5">
+              <span aria-hidden="true" class="search-icon shrink-0 text-secondary"></span>
+              <input
+                id="search-query"
+                ref="searchInput"
+                v-model="query"
+                type="search"
+                autocomplete="off"
+                enterkeyhint="search"
+                required
+                maxlength="400"
+                placeholder="Найти учреждения"
+                class="min-h-11 min-w-0 flex-1 bg-transparent text-base outline-none [&::-webkit-search-cancel-button]:hidden"
+              />
+              <button v-if="(query || submittedQuery) && !busy" type="button" aria-label="Очистить поиск"
+                class="grid size-11 shrink-0 place-items-center rounded-full text-xl text-secondary hover:bg-canvas hover:text-ink focus-visible:outline-accent"
+                @click="clearSearch"><span aria-hidden="true">×</span></button>
+              <button type="submit" :disabled="busy || !query.trim()"
+                class="min-h-11 shrink-0 rounded-full bg-accent px-4 text-sm font-semibold text-white
+                  focus-visible:outline-accent focus-visible:outline-offset-2 disabled:opacity-50 sm:px-6">
+                {{ busy ? "Ищу…" : "Найти" }}
+              </button>
+            </div>
+            <div v-if="centerSearch" class="mt-4 flex flex-wrap justify-center gap-2">
+              <button
+                v-for="prompt in domain.starterPrompts"
+                :key="prompt"
+                type="button"
+                class="min-h-11 max-w-full rounded-full border border-line bg-surface px-4 py-2 text-xs text-secondary
+                  hover:border-accent hover:text-accent focus-visible:outline-accent"
+                @click="search(prompt)"
+              >{{ prompt }}</button>
+            </div>
+          </form>
+          <div class="text-sm text-secondary" :class="{ 'text-center': centerSearch }" aria-live="polite">
+            <p v-if="searchError" role="alert" class="mt-4 text-danger">{{ searchError }}</p>
+            <p v-else-if="busy && !results" class="mt-4">
+              {{ rows.length ? "Найдено: " + rows.length + ". Поиск продолжается…" : "Ищу учреждения и проверяю источники…" }}
+            </p>
+            <p v-else-if="results && !rows.length" class="mt-4 [overflow-wrap:anywhere]">
+              По запросу «{{ submittedQuery }}» ничего не найдено.
+            </p>
+            <p v-else-if="results" class="mt-4">
+              {{ results.cached ? "Из сохранённой выдачи" : "Сохранено в реестре" }} · {{ rows.length }}
+              <span v-if="results.partial"> · Часть источников не удалось обработать. Поиск можно повторить.</span>
+            </p>
+          </div>
         </div>
-        <div class="mt-4 flex flex-wrap gap-2">
-          <button
-            v-for="prompt in domain.starterPrompts"
-            :key="prompt"
-            type="button"
-            :disabled="busy"
-            class="min-h-11 max-w-full rounded-full border border-line px-4 py-2 text-xs text-secondary hover:border-accent hover:text-accent disabled:opacity-50"
-            @click="search(prompt)"
-          >
-            {{ prompt }}
-          </button>
-        </div>
-      </form>
-
-      <div v-if="tab === 'results'" class="mt-4 text-sm text-secondary" aria-live="polite">
-        <p v-if="searchError" role="alert" class="text-danger">{{ searchError }}</p>
-        <p v-else-if="busy && !results">
-          {{ rows.length ? `Найдено: ${rows.length}. Поиск продолжается…` : "Ищу учреждения и проверяю источники…" }}
-        </p>
-        <p v-else-if="results && !rows.length" class="[overflow-wrap:anywhere]">По запросу «{{ submittedQuery }}» ничего не найдено.</p>
-        <p v-else-if="results">
-          {{ results.cached ? "Из сохранённой выдачи" : "Сохранено в реестре" }} · {{ rows.length }}
-          <span v-if="results.partial"> · Часть источников не удалось обработать. Поиск можно повторить.</span>
-        </p>
-        <p v-else>Введите запрос, чтобы найти учреждения.</p>
-      </div>
-      <div v-else class="text-sm text-secondary" aria-live="polite">
+        <ItemsPanel v-if="rows.length || placeholders" :items="rows" :placeholders="placeholders" />
+      </template>
+      <div v-else-if="tab === 'registry' || registryError || !registry.length" class="text-sm text-secondary" aria-live="polite">
         <p v-if="registryError" role="alert" class="text-danger">{{ registryError }}</p>
-        <p v-else-if="loadingRegistry && !registry.length">Загружаю реестр…</p>
-        <p v-else-if="!registry.length">В реестре пока нет учреждений.</p>
+        <button v-if="registryError && tab === 'analytics'" type="button" class="min-h-11 font-semibold text-accent"
+          @click="refreshRegistry">Повторить загрузку</button>
+        <p v-if="loadingRegistry && !registry.length">Загружаю реестр…</p>
+        <p v-else-if="!registryError && !registry.length">В реестре пока нет учреждений.</p>
       </div>
-      <ItemsPanel v-if="tab === 'results' && (rows.length || placeholders)" :items="rows" :placeholders="placeholders" />
+      <MailAnalytics v-if="tab === 'analytics' && registry.length && !registryError" :groups="registryGroups"
+        @open-registry="openRegistry" />
       <RegistryMap v-if="tab === 'registry' && (!loadingRegistry || registry.length) && !registryError"
         v-model="selectedRegion" :counts="regionCounts" :other-regions="otherRegions" :total="registry.length" />
       <div v-if="tab === 'registry' && registry.length" class="mt-5 rounded-2xl border border-line bg-surface p-4 sm:p-5">
-        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           <label class="grid min-w-0 gap-1 text-xs font-medium text-secondary sm:col-span-2 xl:col-span-1">
             Поиск по реестру
             <input v-model="registryQuery" type="search" placeholder="Название или контакт" :class="filterInputClass" />
@@ -379,6 +432,14 @@ onUnmounted(() => window.removeEventListener("popstate", syncPage));
             <select v-model="selectedStatus" :class="filterInputClass">
               <option value="">Все статусы</option>
               <option v-for="(label, value) in responseStatusLabels" :key="value" :value="value">{{ label }}</option>
+            </select>
+          </label>
+          <label class="grid min-w-0 gap-1 text-xs font-medium text-secondary">
+            Почта
+            <select v-model="selectedEmail" :class="filterInputClass">
+              <option value="">Все учреждения</option>
+              <option value="present">С почтой</option>
+              <option value="missing">Без почты</option>
             </select>
           </label>
           <label class="grid min-w-0 gap-1 text-xs font-medium text-secondary">
@@ -422,3 +483,46 @@ onUnmounted(() => window.removeEventListener("popstate", syncPage));
       @close="editing = undefined" @save="saveInstitution" />
   </main>
 </template>
+
+<style scoped>
+.search-panel {
+  container-type: size;
+}
+
+.search-layout {
+  padding-block-start: 0;
+}
+
+.search-layout--centered {
+  padding-block-start: max(0px, calc(100cqh - 50svh + 0.75rem));
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .search-layout {
+    transition: padding-block-start 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
+
+.search-icon {
+  position: relative;
+  width: 0.9rem;
+  height: 0.9rem;
+  margin-right: 0.25rem;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  transform: translateY(-1px);
+}
+
+.search-icon::after {
+  position: absolute;
+  top: 100%;
+  left: 80%;
+  width: 0.4rem;
+  height: 1.5px;
+  border-radius: 1px;
+  background: currentColor;
+  content: "";
+  transform: rotate(45deg);
+  transform-origin: left center;
+}
+</style>

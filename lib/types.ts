@@ -1,45 +1,41 @@
-export type Role = "system" | "user" | "assistant" | "tool";
+import type { InstitutionType } from "./institution-types.ts";
 
-export interface ToolCall {
-  id: string;
+export interface InstitutionDetails {
   name: string;
-  arguments: Record<string, unknown>;
+  city: string;
+  region: string;
+  institutionType: InstitutionType | null;
+  leaderName: string | null;
+  institutionEmail: string | null;
+  institutionPhone: string | null;
+  sourceUrls: string[];
 }
 
-export interface ChatMessage {
-  role: Role;
-  content: string;
-  toolCalls?: ToolCall[];
-  toolCallId?: string;
-  name?: string;
-}
+export type InstitutionEdits = Partial<InstitutionDetails>;
 
-export interface TraceEntry {
-  step: number;
-  kind: "call" | "result" | "text" | "error";
-  name?: string;
-  detail: string;
-  at: string;
-}
-
-export interface AgentResult {
-  messages: Array<{ role: "assistant"; content: string }>;
-  trace: TraceEntry[];
-  provider: string;
-  steps: number;
-}
-
-export interface Item {
+export interface Institution extends InstitutionDetails {
   id: string;
-  title: string;
-  status: "new" | "in_progress" | "done";
-  createdAt: string;
+  responseStatus: "not_sent" | "awaiting_reply" | "replied";
 }
 
-/** Сообщение в state интерфейса (без системных/tool-сообщений). */
-export interface UiMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  pending?: boolean;
+export const responseStatusLabels = {
+  not_sent: "Письмо не отправлено",
+  awaiting_reply: "Ожидается ответ",
+  replied: "Ответ получен",
+} satisfies Record<Institution["responseStatus"], string>;
+
+export interface SearchResult {
+  institutions: Institution[];
+  cached: boolean;
+  partial?: boolean;
 }
+
+export interface InstitutionRefreshResult {
+  institution: Institution;
+  status: "updated" | "unchanged" | "not_verified";
+}
+
+export type SearchEvent =
+  | { type: "institution"; institution: InstitutionDetails; checkingContacts: boolean }
+  | { type: "complete"; result: SearchResult }
+  | { type: "error"; message: string };

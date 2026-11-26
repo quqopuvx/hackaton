@@ -198,20 +198,25 @@ export async function listSchoolMailReminders(days: number): Promise<SchoolMailR
 
 export async function listSchoolMailTemplates(): Promise<SavedSchoolMailTemplate[]> {
   const pool = await database();
-  return (await pool.query<SavedSchoolMailTemplate>("SELECT id, name, subject, text FROM school_mail_templates ORDER BY name, id")).rows;
+  return (await pool.query<SavedSchoolMailTemplate>("SELECT id, name, subject, text, layout FROM school_mail_templates ORDER BY name, id")).rows;
 }
 
 export async function findSchoolMailTemplate(id: string): Promise<SavedSchoolMailTemplate | undefined> {
   const pool = await database();
-  return (await pool.query<SavedSchoolMailTemplate>("SELECT id, name, subject, text FROM school_mail_templates WHERE id = $1", [id])).rows[0];
+  return (await pool.query<SavedSchoolMailTemplate>("SELECT id, name, subject, text, layout FROM school_mail_templates WHERE id = $1", [id])).rows[0];
 }
 
-export async function saveSchoolMailTemplate(template: SavedSchoolMailTemplate, update: boolean): Promise<SavedSchoolMailTemplate | undefined> {
+export async function saveSchoolMailTemplate(
+  template: Omit<SavedSchoolMailTemplate, "layout"> & Partial<Pick<SavedSchoolMailTemplate, "layout">>,
+  update: boolean,
+): Promise<SavedSchoolMailTemplate | undefined> {
   const pool = await database();
   const sql = update
-    ? "UPDATE school_mail_templates SET name = $2, subject = $3, text = $4 WHERE id = $1 RETURNING id, name, subject, text"
-    : "INSERT INTO school_mail_templates (id, name, subject, text) VALUES ($1, $2, $3, $4) RETURNING id, name, subject, text";
-  return (await pool.query<SavedSchoolMailTemplate>(sql, [template.id, template.name, template.subject, template.text])).rows[0];
+    ? `UPDATE school_mail_templates SET name = $2, subject = $3, text = $4, layout = COALESCE($5, layout)
+       WHERE id = $1 RETURNING id, name, subject, text, layout`
+    : `INSERT INTO school_mail_templates (id, name, subject, text, layout)
+       VALUES ($1, $2, $3, $4, COALESCE($5, 'plain')) RETURNING id, name, subject, text, layout`;
+  return (await pool.query<SavedSchoolMailTemplate>(sql, [template.id, template.name, template.subject, template.text, template.layout])).rows[0];
 }
 
 export async function markSchoolsReplied(ids: string[]): Promise<void> {

@@ -48,3 +48,6 @@ CREATE TABLE IF NOT EXISTS school_mail_templates (
   subject text NOT NULL,
   text text NOT NULL
 );
+
+ALTER TABLE school_mail_templates ADD COLUMN IF NOT EXISTS layout text NOT NULL DEFAULT 'plain'
+  CHECK (layout IN ('plain', 'promotion', 'invitation', 'newsletter'));

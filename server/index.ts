@@ -19,6 +19,7 @@ const mime: Record<string, string> = {
   ".png": "image/png",
   ".ico": "image/x-icon",
   ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
 };
 
 const server = createServer(async (req, res) => {

@@ -3,7 +3,7 @@ import { DatabaseError } from "pg";
 import { randomUUID } from "node:crypto";
 import { authorizeSchoolMail, sendSchoolMail } from "./school-mail.ts";
 import { readSchoolReplies } from "./school-replies.ts";
-import { isSingleEmail, schoolMailDraft, schoolMailLimit, schoolMailSubjectLimit, schoolMailTemplates, schoolMailTextLimit, type SchoolMailRecipient, type SchoolMailTemplate } from "../lib/school-mail.ts";
+import { isSchoolMailLayout, isSingleEmail, schoolMailDefaultLayout, schoolMailDraft, schoolMailLimit, schoolMailSubjectLimit, schoolMailTemplates, schoolMailTextLimit, type SchoolMailLayout, type SchoolMailRecipient, type SchoolMailTemplate } from "../lib/school-mail.ts";
 import { refreshInstitution, runAgent } from "../lib/ai/agent.ts";
 import { institutionTypeLabels, type InstitutionType } from "../lib/institution-types.ts";
 import { findSchoolMailTemplate, listInstitutions, listSchoolMailHistory, listSchoolMailReminders, listSchoolMailTemplates, normalize, saveSchoolMailTemplate, updateInstitution } from "../lib/store.ts";
@@ -128,13 +128,14 @@ async function handleMailTemplates(req: IncomingMessage, res: ServerResponse): P
   if (req.headers["content-type"]?.split(";")[0].trim().toLowerCase() !== "application/json") {
     throw new InputError("Ожидается application/json.");
   }
-  const { id, name, subject, text } = await readBody(req, 24 * 1024);
+  const { id, name, subject, text, layout } = await readBody(req, 24 * 1024);
   if (id !== undefined && (typeof id !== "string" || !uuidPattern.test(id))) throw new InputError("Некорректный шаблон.");
   if (!isMailLine(name, 100) || !isMailLine(subject, schoolMailSubjectLimit) || !isMailText(text)) {
     throw new InputError("Заполните название, тему и текст шаблона.");
   }
+  if (layout !== undefined && !isSchoolMailLayout(layout)) throw new InputError("Выберите оформление письма.");
   const template = await saveSchoolMailTemplate({
-    id: id ?? randomUUID(), name: name.trim(), subject: subject.trim(), text: text.trim(),
+    id: id ?? randomUUID(), name: name.trim(), subject: subject.trim(), text: text.trim(), layout,
   }, id !== undefined);
   if (template) send(res, id === undefined ? 201 : 200, { template });
   else send(res, 404, { error: "Шаблон не найден." });
@@ -157,7 +158,7 @@ async function handleSchoolMail(req: IncomingMessage, res: ServerResponse, repli
     send(res, 200, { replies: await readSchoolReplies() });
     return;
   }
-  const { requestId, template, recipients, accessCode, text, subject } = await readBody(req, 32 * 1024);
+  const { requestId, template, recipients, accessCode, text, subject, layout } = await readBody(req, 32 * 1024);
   const access = authorizeSchoolMail(typeof accessCode === "string" ? accessCode : "");
   if (access === "unconfigured") {
     send(res, 503, { error: "Почта ещё не настроена. Обратитесь к администратору." });
@@ -184,15 +185,17 @@ async function handleSchoolMail(req: IncomingMessage, res: ServerResponse, repli
     }
     selected.set(id, { id, email });
   }
-  let message: { subject: string; text: string };
+  if (layout !== undefined && !isSchoolMailLayout(layout)) throw new InputError("Выберите оформление письма.");
+  if (subject !== undefined && !isMailLine(subject, schoolMailSubjectLimit)) throw new InputError("Некорректная тема письма.");
+  let message: { subject: string; text: string; layout: SchoolMailLayout };
   if (Object.hasOwn(schoolMailTemplates, template)) {
     const builtin = template as SchoolMailTemplate;
-    message = { subject: schoolMailTemplates[builtin], text: text ?? schoolMailDraft(builtin) };
+    message = { subject: subject?.trim() ?? schoolMailTemplates[builtin], text: text ?? schoolMailDraft(builtin),
+      layout: layout ?? schoolMailDefaultLayout(builtin) };
   } else {
     const saved = await findSchoolMailTemplate(template);
     if (!saved) throw new InputError("Выбранный шаблон не найден.");
-    if (subject !== undefined && !isMailLine(subject, schoolMailSubjectLimit)) throw new InputError("Некорректная тема письма.");
-    message = { subject: subject?.trim() ?? saved.subject, text: text ?? saved.text };
+    message = { subject: subject?.trim() ?? saved.subject, text: text ?? saved.text, layout: layout ?? saved.layout };
   }
   send(res, 200, { outcomes: await sendSchoolMail(requestId, template, [...selected.values()], message) });
 }

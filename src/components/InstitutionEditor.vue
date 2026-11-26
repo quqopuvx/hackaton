@@ -42,7 +42,7 @@ const edits = computed(() => {
   return changes;
 });
 const hasEdits = computed(() => Object.keys(edits.value).length > 0);
-const inputClass = "min-w-0 w-full rounded-xl border border-line bg-canvas px-3 py-2 text-base text-ink focus-visible:outline-accent sm:text-sm";
+const inputClass = "min-w-0 w-full rounded-ui border border-line bg-canvas px-3 py-2 text-base text-ink focus-visible:outline-accent sm:text-sm";
 
 function close(): void {
   if (!props.saving) emit("close");
@@ -54,7 +54,7 @@ onBeforeUnmount(() => dialog.value?.close());
 
 <template>
   <dialog ref="dialog" aria-labelledby="institution-editor-title" @cancel.prevent="close"
-    class="fixed inset-0 m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto rounded-3xl border border-line bg-surface p-5 text-ink shadow-xl backdrop:bg-slate-900/45 sm:p-7">
+    class="fixed inset-0 m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto rounded-ui border border-line bg-surface p-5 text-ink shadow-xl backdrop:bg-slate-900/45 sm:p-7">
     <h2 id="institution-editor-title" class="mb-5 text-xl font-semibold">Редактирование учреждения</h2>
     <form @submit.prevent="hasEdits && !saving && emit('save', edits)">
       <fieldset :disabled="saving" class="grid min-w-0 gap-4 sm:grid-cols-2">
@@ -80,10 +80,10 @@ onBeforeUnmount(() => dialog.value?.close());
       </fieldset>
       <p v-if="error" role="alert" class="mt-4 text-sm text-danger">{{ error }}</p>
       <div class="mt-5 flex flex-wrap justify-end gap-3">
-        <button type="button" :disabled="saving" class="min-h-11 rounded-xl border border-line px-4 text-sm disabled:opacity-50"
+        <button type="button" :disabled="saving" class="min-h-11 rounded-ui border border-line px-4 text-sm disabled:opacity-50"
           @click="close">Отмена</button>
         <button type="submit" :disabled="saving || !hasEdits"
-          class="min-h-11 rounded-xl bg-accent px-5 text-sm font-semibold text-white disabled:opacity-50">
+          class="min-h-11 rounded-ui bg-accent px-5 text-sm font-semibold text-white disabled:opacity-50">
           {{ saving ? "Сохраняю…" : "Сохранить" }}
         </button>
       </div>

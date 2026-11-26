@@ -1,7 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import nodemailer from "nodemailer";
 import { isSingleEmail, personalizeSchoolMail } from "../lib/school-mail.ts";
-import type { SchoolMailOutcome, SchoolMailRecipient } from "../lib/school-mail.ts";
+import type { SchoolMailLayout, SchoolMailOutcome, SchoolMailRecipient } from "../lib/school-mail.ts";
+import { renderSchoolMailHtml } from "../lib/school-mail-html.ts";
 import { claimSchoolMail, findInstitution, finishSchoolMail } from "../lib/store.ts";
 
 function smtpConfig() {
@@ -24,7 +25,8 @@ export function authorizeSchoolMail(code: string): "unconfigured" | "denied" | "
 }
 
 export async function sendSchoolMail(
-  requestId: string, template: string, recipients: SchoolMailRecipient[], message: { subject: string; text: string },
+  requestId: string, template: string, recipients: SchoolMailRecipient[],
+  message: { subject: string; text: string; layout: SchoolMailLayout },
 ): Promise<SchoolMailOutcome[]> {
   const config = smtpConfig();
   if (!config) throw new Error("Отправка писем ещё не настроена.");
@@ -47,11 +49,13 @@ export async function sendSchoolMail(
     let status: "sent" | "failed" | "uncertain";
     let messageId: string | null = null;
     try {
+      const text = personalizeSchoolMail(message.text, school.name);
       const info = await transport.sendMail({
         from,
         to: { name: school.name, address: email },
         subject: message.subject,
-        text: personalizeSchoolMail(message.text, school.name),
+        text,
+        html: renderSchoolMailHtml(message.layout, message.subject, text),
       });
       status = info.accepted.length ? "sent" : "failed";
       if (status === "sent") messageId = info.messageId || null;

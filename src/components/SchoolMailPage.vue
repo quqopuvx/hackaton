@@ -19,7 +19,7 @@ const props = defineProps<{
   composeRequest: number;
 }>();
 
-const emit = defineEmits<{ toggle: [id: string]; chooseRecipients: [ids: string[]]; lock: []; reset: []; sent: [] }>();
+const emit = defineEmits<{ toggle: [id: string]; chooseRecipients: [ids: string[]]; lock: []; unlock: []; reset: []; sent: [] }>();
 const query = ref("");
 const tabs = { compose: "Отправка", replies: "Ответы от школ", history: "Отправленные", templates: "Шаблоны" } as const;
 const panel = ref<keyof typeof tabs>("compose");
@@ -68,7 +68,7 @@ const visibleSchools = computed(() => {
 <template>
   <section aria-labelledby="mail-page-title"
     class="min-h-0 w-full flex-1 overflow-y-auto pt-4 pb-5 [scrollbar-gutter:stable] sm:pt-5">
-    <h2 id="mail-page-title" class="mb-4 text-xl font-semibold sm:text-2xl">Почта</h2>
+    <h2 id="mail-page-title" class="mb-4 text-xl font-extrabold text-accent sm:text-2xl">Почта</h2>
     <nav aria-label="Разделы почты" class="mb-4 flex flex-wrap gap-2 border-b border-line">
       <button v-for="(label, key) in tabs" :key="key" type="button" class="min-h-11 border-b-2 px-3 text-sm font-semibold"
         :aria-pressed="panel === key" :class="panel === key ? 'border-accent text-accent' : 'border-transparent text-secondary'"
@@ -80,18 +80,18 @@ const visibleSchools = computed(() => {
     <SchoolMailTemplates v-show="panel === 'templates'" :templates="savedTemplates" :load-error="templateError"
       @saved="updateTemplates" />
     <div v-show="panel === 'compose'" class="grid items-start gap-4 lg:grid-cols-2">
-      <section class="min-w-0 rounded-2xl border border-line bg-surface p-4 sm:p-5" aria-labelledby="mail-recipients-title">
+      <section class="min-w-0 rounded-ui border border-line bg-surface p-4 sm:p-5" aria-labelledby="mail-recipients-title">
         <h3 id="mail-recipients-title" class="text-lg font-semibold">Выбор школ</h3>
         <label class="mt-3 grid gap-1 text-sm font-medium">
           Поиск школы
           <input v-model="query" type="search" placeholder="Название, город, регион или почта"
-            class="min-h-11 rounded-xl border border-line bg-canvas px-3 text-sm focus-visible:outline-accent" />
+            class="min-h-11 rounded-ui border border-line bg-canvas px-3 text-sm focus-visible:outline-accent" />
         </label>
         <p class="mt-3 text-sm text-secondary" aria-live="polite">Выбрано {{ selected.size }} из {{ schoolMailLimit }}</p>
         <p v-if="error" role="alert" class="mt-3 text-sm text-danger">{{ error }}</p>
         <p v-else-if="loading && !schools.length" class="mt-3 text-sm text-secondary">Загружаю школы…</p>
         <p v-else-if="!schools.length" class="mt-3 text-sm text-secondary">
-          В реестре пока нет школ. Найдите школы в разделе «Результаты поиска».
+          В реестре пока нет школ. Найдите школы в разделе «Поиск».
         </p>
         <p v-else-if="!visibleSchools.length" class="mt-3 text-sm text-secondary">По запросу школы не найдены.</p>
         <ul v-else class="mt-3 max-h-[50vh] divide-y divide-line overflow-y-auto">
@@ -115,8 +115,8 @@ const visibleSchools = computed(() => {
       </section>
       <SchoolMailPanel v-if="selectedSchools.length" :key="composerKey" :schools="selectedSchools"
         :saved-templates="savedTemplates" :reminder-preset="reminderPreset"
-        @lock="emit('lock')" @reset="emit('reset')" @sent="emit('sent')" />
-      <section v-else class="rounded-2xl border border-line bg-surface p-4 sm:p-5">
+        @lock="emit('lock')" @unlock="emit('unlock')" @reset="emit('reset')" @sent="emit('sent')" />
+      <section v-else class="rounded-ui border border-line bg-surface p-4 sm:p-5">
         <h3 class="text-lg font-semibold">Письма школам</h3>
         <p class="mt-2 text-sm text-secondary">Отметьте хотя бы одну школу, чтобы выбрать шаблон и посмотреть письмо.</p>
       </section>

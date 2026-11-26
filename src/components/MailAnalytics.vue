@@ -69,7 +69,7 @@ const cards = computed<Array<{ label: string; value: number; detail: string; fil
   <div class="space-y-5">
     <div class="flex flex-wrap items-center justify-between gap-x-5 gap-y-1">
       <div>
-        <h2 class="text-xl font-semibold tracking-tight sm:text-2xl">Аналитика переписки</h2>
+        <h2 class="text-xl font-extrabold text-accent sm:text-2xl">Аналитика переписки</h2>
         <p class="mt-1 text-sm text-secondary">Статусы и почтовые контакты по всему реестру</p>
       </div>
       <button type="button" class="min-h-11 text-sm font-medium text-accent underline-offset-4 hover:underline"
@@ -78,7 +78,7 @@ const cards = computed<Array<{ label: string; value: number; detail: string; fil
 
     <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       <button v-for="card in cards" :key="card.label" type="button"
-        class="flex min-w-0 flex-col items-start rounded-2xl border border-line bg-surface p-4 text-left transition-colors enabled:hover:border-accent enabled:hover:bg-accent-soft focus-visible:outline-accent sm:p-5"
+        class="flex min-w-0 flex-col items-start rounded-ui border border-line bg-surface p-4 text-left transition-colors enabled:hover:border-accent enabled:hover:bg-accent-soft focus-visible:outline-accent sm:p-5"
         :disabled="!card.value" @click="emit('open-registry', card.filters)">
         <span class="text-sm font-semibold">{{ card.label }}</span>
         <span class="my-1.5 text-3xl font-semibold tracking-tight tabular-nums">{{ number.format(card.value) }}</span>
@@ -87,12 +87,12 @@ const cards = computed<Array<{ label: string; value: number; detail: string; fil
     </div>
 
     <div class="grid gap-4 lg:grid-cols-[2fr_1fr]">
-      <section aria-labelledby="mail-status-title" class="rounded-2xl border border-line bg-surface p-4 sm:p-5">
+      <section aria-labelledby="mail-status-title" class="rounded-ui border border-line bg-surface p-4 sm:p-5">
         <h3 id="mail-status-title" class="font-semibold">Статусы переписки</h3>
         <p class="mt-1 text-sm text-secondary">Всего учреждений · {{ number.format(overall.total) }}</p>
         <ul class="mt-2 grid gap-1">
           <li v-for="{ key, color } in statuses" :key="key">
-            <button type="button" class="block min-h-11 w-full rounded text-left enabled:hover:text-accent focus-visible:outline-accent"
+            <button type="button" class="block min-h-11 w-full rounded-ui text-left enabled:hover:text-accent focus-visible:outline-accent"
               :disabled="!overall.counts[key]" @click="emit('open-registry', { status: key })">
               <span class="flex items-baseline justify-between gap-4 text-sm">
                 <span>{{ responseStatusLabels[key] }}</span>
@@ -100,8 +100,8 @@ const cards = computed<Array<{ label: string; value: number; detail: string; fil
                   {{ number.format(overall.counts[key]) }} · {{ percent.format(overall.counts[key] / overall.total) }}
                 </span>
               </span>
-              <span aria-hidden="true" class="mt-1 block h-2 overflow-hidden rounded-full bg-slate-100">
-                <span class="block h-full rounded-full" :class="color"
+              <span aria-hidden="true" class="mt-1 block h-2 overflow-hidden rounded-ui bg-accent-soft">
+                <span class="block h-full rounded-ui" :class="color"
                   :style="{ width: `${100 * overall.counts[key] / overall.total}%` }" />
               </span>
             </button>
@@ -109,7 +109,7 @@ const cards = computed<Array<{ label: string; value: number; detail: string; fil
         </ul>
       </section>
 
-      <section aria-labelledby="mail-contacts-title" class="flex flex-col items-start rounded-2xl border border-line bg-surface p-4 sm:p-5">
+      <section aria-labelledby="mail-contacts-title" class="flex flex-col items-start rounded-ui border border-line bg-surface p-4 sm:p-5">
         <h3 id="mail-contacts-title" class="font-semibold">Учреждения без почты</h3>
         <p class="mt-2 text-3xl font-semibold tabular-nums">{{ number.format(missing) }}</p>
         <p class="mt-2 text-sm text-secondary">
@@ -120,7 +120,7 @@ const cards = computed<Array<{ label: string; value: number; detail: string; fil
       </section>
     </div>
 
-    <section aria-labelledby="mail-regions-title" class="rounded-2xl border border-line bg-surface">
+    <section aria-labelledby="mail-regions-title" class="rounded-ui border border-line bg-surface">
       <h3 id="mail-regions-title" class="px-4 py-4 font-semibold sm:px-5">Переписка по регионам</h3>
       <div class="overflow-x-auto" tabindex="0" aria-labelledby="mail-regions-title">
         <table class="w-full text-left text-sm">

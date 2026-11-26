@@ -74,11 +74,11 @@ watch(() => props.active, (active, _, onCleanup) => {
 </script>
 
 <template>
-  <section aria-labelledby="school-replies-title" class="rounded-2xl border border-line bg-surface p-4 sm:p-5">
+  <section aria-labelledby="school-replies-title" class="rounded-ui border border-line bg-surface p-4 sm:p-5">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <h3 id="school-replies-title" class="text-lg font-semibold">Ответы от школ</h3>
       <button type="button" :disabled="loading"
-        class="min-h-11 rounded-xl border border-line px-4 text-sm font-medium text-accent disabled:opacity-50"
+        class="min-h-11 rounded-ui border border-line px-4 text-sm font-medium text-accent disabled:opacity-50"
         @click="refresh">{{ loading ? "Обновляю…" : "Обновить" }}</button>
     </div>
     <p v-if="error" role="alert" class="mt-3 text-sm text-danger">{{ error }}</p>
@@ -92,7 +92,7 @@ watch(() => props.active, (active, _, onCleanup) => {
         <ul class="mt-2 space-y-1">
           <li v-for="school in schools.values()" :key="school.schoolId">
             <button type="button"
-              class="block min-h-11 w-full rounded-xl border px-3 py-2.5 text-left focus-visible:outline-accent"
+              class="block min-h-11 w-full rounded-ui border px-3 py-2.5 text-left focus-visible:outline-accent"
               :class="selectedSchoolId === school.schoolId
                 ? 'border-accent bg-canvas' : 'border-transparent hover:bg-canvas'"
               :aria-pressed="selectedSchoolId === school.schoolId" @click="selectSchool(school.schoolId)">

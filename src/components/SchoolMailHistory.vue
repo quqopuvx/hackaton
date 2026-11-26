@@ -61,22 +61,22 @@ function prepare(): void {
 </script>
 
 <template>
-  <section aria-labelledby="mail-history-title" class="min-w-0 rounded-2xl border border-line bg-surface p-4 sm:p-5">
+  <section aria-labelledby="mail-history-title" class="min-w-0 rounded-ui border border-line bg-surface p-4 sm:p-5">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <h3 id="mail-history-title" class="text-lg font-semibold">Отправленные письма</h3>
-      <button type="button" :disabled="loading" class="min-h-11 rounded-xl border border-line px-4 text-sm text-accent disabled:opacity-50"
+      <button type="button" :disabled="loading" class="min-h-11 rounded-ui border border-line px-4 text-sm text-accent disabled:opacity-50"
         @click="reload++">Обновить</button>
     </div>
     <div class="mt-3 flex flex-wrap gap-2" aria-label="Вид списка">
-      <button type="button" class="min-h-11 rounded-xl border px-3 text-sm" :aria-pressed="view === 'history'"
+      <button type="button" class="min-h-11 rounded-ui border px-3 text-sm" :aria-pressed="view === 'history'"
         :class="view === 'history' ? 'border-accent text-accent' : 'border-line'" @click="view = 'history'">Все отправки</button>
-      <button type="button" class="min-h-11 rounded-xl border px-3 text-sm" :aria-pressed="view === 'reminders'"
+      <button type="button" class="min-h-11 rounded-ui border px-3 text-sm" :aria-pressed="view === 'reminders'"
         :class="view === 'reminders' ? 'border-accent text-accent' : 'border-line'" @click="view = 'reminders'">Давно ждут ответа</button>
     </div>
     <div v-if="view === 'reminders'" class="mt-3 flex flex-wrap items-end justify-between gap-3">
       <label class="grid gap-1 text-sm font-medium">
         С последнего письма прошло
-        <select v-model.number="days" class="min-h-11 rounded-xl border border-line bg-canvas px-3 text-sm"
+        <select v-model.number="days" class="min-h-11 rounded-ui border border-line bg-canvas px-3 text-sm"
           @change="selected.clear()">
           <option :value="7">7 дней и больше</option>
           <option :value="14">14 дней и больше</option>
@@ -84,7 +84,7 @@ function prepare(): void {
         </select>
       </label>
       <button type="button" :disabled="locked || loading || !!error || !selected.size"
-        class="min-h-11 rounded-xl bg-accent px-4 text-sm font-semibold text-white disabled:opacity-50"
+        class="min-h-11 rounded-ui bg-accent px-4 text-sm font-semibold text-white disabled:opacity-50"
         @click="prepare">Подготовить напоминание ({{ selected.size }})</button>
     </div>
     <p v-if="view === 'reminders' && locked" class="mt-2 text-sm text-secondary">Завершите текущую рассылку во вкладке «Отправка».</p>

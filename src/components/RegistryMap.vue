@@ -12,7 +12,7 @@ const svg = ref<SVGSVGElement>();
 const hovered = ref("");
 const zoom = ref(1);
 const offset = ref({ x: 0, y: 0 });
-const colors = ["#dce7f0", "#a8d7f3", "#50a8dc", "#2373ab"];
+const colors = ["#dcd1e3", "#bb9ec5", "#9c76a4", "#5d3a63"];
 const names = new Intl.Collator("ru", { numeric: true });
 const options = computed(() => [
   ...regionMap.regions.map(({ code, name }) => ({ code, region: name })),
@@ -29,7 +29,7 @@ let ignoreClick = false;
 let pointer: { id: number; x: number; y: number; factor: number; origin: { x: number; y: number } } | undefined;
 
 function color(code: string): string {
-  if (selected.value === code) return "#174f79";
+  if (selected.value === code) return "#49284f";
   const count = props.counts.get(code) ?? 0;
   return colors[count >= 10 ? 3 : count >= 4 ? 2 : count > 0 ? 1 : 0];
 }
@@ -103,16 +103,15 @@ function accessibleName(code: string): string {
 </script>
 
 <template>
-  <section class="overflow-hidden rounded-2xl border border-line bg-surface sm:rounded-[1.75rem]" aria-labelledby="region-map-title">
-    <div class="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-4 sm:px-7 sm:py-5">
+  <section class="registry-map" aria-labelledby="region-map-title">
+    <div class="map-heading">
       <div class="min-w-0">
-        <h2 id="region-map-title" class="text-lg font-semibold tracking-tight sm:text-xl">Карта учреждений реестра</h2>
+        <h2 id="region-map-title" class="text-xl font-extrabold text-accent sm:text-2xl">Карта учреждений реестра</h2>
         <p class="mt-1 text-sm text-secondary">Выберите регион, чтобы отфильтровать реестр.</p>
       </div>
-      <label class="flex w-full min-w-0 flex-col gap-1 text-xs font-medium text-secondary sm:max-w-80" for="registry-region">
-        Регион
-        <select id="registry-region" v-model="selected"
-          class="min-h-11 w-full min-w-0 rounded-xl border border-line bg-surface px-3 text-base text-ink focus-visible:outline-accent sm:text-sm">
+      <label class="map-filter" for="registry-region">
+        <span class="sr-only">Регион</span>
+        <select id="registry-region" v-model="selected">
           <option value="">Все регионы</option>
           <option v-for="option in options" :key="option.code" :value="option.code">
             {{ option.region }} ({{ counts.get(option.code) ?? 0 }})
@@ -121,14 +120,8 @@ function accessibleName(code: string): string {
       </label>
     </div>
 
-    <div class="flex flex-wrap gap-x-5 gap-y-1 border-y border-line bg-slate-50 px-4 py-2 text-sm text-secondary sm:gap-x-7 sm:px-7 sm:py-3">
-      <span>В реестре <strong class="ml-1 text-base text-ink">{{ total }}</strong></span>
-      <span>Регионов с записями на карте <strong class="ml-1 text-base text-ink">{{ coverage }} из {{ regionMap.regions.length }}</strong></span>
-      <span v-if="selected">Выбрано учреждений <strong class="ml-1 text-base text-ink">{{ counts.get(selected) ?? 0 }}</strong></span>
-    </div>
-
-    <div class="relative bg-[#f2f7fc]">
-      <svg ref="svg" :viewBox="viewBox" class="block w-full select-none overflow-hidden"
+    <div class="map-frame">
+      <svg ref="svg" :viewBox="viewBox" class="map-art select-none overflow-hidden"
         :class="{ 'touch-none': zoom > 1, 'cursor-grabbing': dragging }"
         role="group" aria-label="Интерактивная карта регионов"
         @pointerdown="startPan" @pointermove="pan" @pointerup="stopPan" @pointercancel="stopPan"
@@ -155,23 +148,25 @@ function accessibleName(code: string): string {
         </template>
       </svg>
 
-      <div class="flex justify-end gap-1 px-3 pb-3 sm:absolute sm:top-4 sm:right-4 sm:flex-col sm:p-0"
+      <div class="map-controls"
         role="group" aria-label="Масштаб карты">
         <button type="button" class="map-control" :disabled="zoom >= 5" aria-label="Приблизить карту" @click="changeZoom(1.5)">+</button>
         <button type="button" class="map-control" :disabled="zoom <= 1" aria-label="Отдалить карту" @click="changeZoom(1 / 1.5)">−</button>
         <button type="button" class="map-control text-xs!" :disabled="zoom <= 1" aria-label="Сбросить масштаб карты" @click="resetView">1×</button>
       </div>
+      <p v-if="active" class="map-active">{{ active.region }} · {{ counts.get(active.code) ?? 0 }}</p>
     </div>
 
-    <div class="border-t border-line px-4 py-3 sm:px-7">
-      <p class="min-h-5 text-sm font-semibold text-ink [overflow-wrap:anywhere]">
-        <template v-if="active">{{ active.region }} · {{ counts.get(active.code) ?? 0 }}</template>
-        <template v-else>Учреждений в регионе</template>
-      </p>
-      <div class="mt-2 flex flex-wrap items-center justify-between gap-3">
-        <ul class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-secondary" aria-label="Легенда по числу учреждений">
-          <li v-for="(label, index) in ['0', '1–3', '4–9', '10+']" :key="label" class="flex items-center gap-1.5">
-            <span class="size-3.5 rounded-sm border border-slate-300" :style="{ background: colors[index] }" aria-hidden="true"></span>
+    <div class="map-summary">
+      <div class="map-counts" aria-live="polite">
+        <span>В реестре <strong>{{ total }}</strong></span>
+        <span>Регионов с записями на карте <strong>{{ coverage }} из {{ regionMap.regions.length }}</strong></span>
+      </div>
+      <div class="map-legend">
+        <span>Учреждений в регионе:</span>
+        <ul class="flex flex-wrap gap-2" aria-label="Легенда по числу учреждений">
+          <li v-for="(label, index) in ['0', '1–3', '4–9', '10+']" :key="label" class="flex items-center gap-1">
+            <span class="size-3 rounded-ui" :style="{ background: colors[index] }" aria-hidden="true"></span>
             {{ label }}
           </li>
         </ul>
@@ -184,35 +179,35 @@ function accessibleName(code: string): string {
 .map-region, .map-city {
   cursor: pointer;
   stroke: #fff;
-  stroke-width: 1.1;
+  stroke-width: 0.65;
   vector-effect: non-scaling-stroke;
 }
 
 .map-city {
-  stroke: #477391;
+  stroke: #92709a;
   stroke-width: 1.5;
 }
 
 .region-hover, .map-region:focus-visible, .map-city:focus-visible {
   filter: brightness(0.86);
   outline: none;
-  stroke: #174f79;
+  stroke: var(--color-accent);
   stroke-width: 1.8;
 }
 
 .map-control {
   width: 2.75rem;
   height: 2.75rem;
-  border-radius: 0.75rem;
-  border: 1px solid #cfdeea;
+  border-radius: var(--radius-ui);
+  border: 1px solid currentColor;
   background: #fff;
-  color: #174f79;
+  color: var(--color-accent);
   font-size: 1.25rem;
   font-weight: 700;
 }
 
 .map-control:hover:enabled {
-  background: #e5f2ff;
+  background: var(--color-accent-soft);
 }
 
 .map-control:disabled {

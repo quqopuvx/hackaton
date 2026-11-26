@@ -5,28 +5,26 @@ import { isDirectorySource } from "../../lib/institution-sources";
 import { isSingleEmail, schoolMailLimit } from "../../lib/school-mail";
 
 type DisplayRow = InstitutionDetails & Partial<Pick<Institution, "id" | "responseStatus">> & { checkingContacts?: boolean };
-withDefaults(defineProps<{
+defineProps<{
   items: DisplayRow[];
   placeholders: number;
-  showRegion?: boolean;
   editable?: boolean;
   mailSelection?: Set<string>;
   mailSelectionLocked?: boolean;
   rowUpdates?: Record<string, { pending?: boolean; message?: string; error?: boolean }>;
-}>(), { showRegion: true });
-const emit = defineEmits<{ edit: [id: string]; refresh: [id: string]; toggleMail: [id: string] }>();
+}>();
+const emit = defineEmits<{ edit: [id: string]; refresh: [id: string]; toggleMail: [id: string]; writeMail: [id: string] }>();
 const columnLabels = {
   name: "Название учреждения",
   type: "Тип учреждения",
   city: "Город",
   region: "Регион",
   leader: "Руководитель",
-  email: "Почта учреждения",
-  phone: "Телефон учреждения",
-  status: "Статус ответа",
+  contacts: "Контактная информация",
+  status: "Статус",
 };
 const mobileLabelClass = "mb-1 block text-xs font-medium text-secondary lg:hidden";
-const cellClass = "px-3 py-4 max-lg:p-0 xl:px-4";
+const cellClass = "px-3 py-3 max-lg:p-0";
 
 function sourceLabel(source: string): string {
   const host = new URL(source).hostname.replace(/^www\./, "");
@@ -39,43 +37,41 @@ function orderedSources(sources: string[]): string[] {
 </script>
 
 <template>
-  <div class="relative mt-4 overflow-hidden rounded-2xl border border-line bg-surface lg:rounded-[2rem]">
-    <table role="table" class="w-full text-left text-sm [overflow-wrap:anywhere] max-lg:block">
-      <thead role="rowgroup" class="border-b border-line bg-canvas/70 text-xs text-secondary max-lg:sr-only">
+  <div class="institution-table" :class="{ 'institution-table--editable': editable }">
+    <table role="table" class="w-full text-left text-sm [overflow-wrap:anywhere] max-lg:block lg:table-fixed">
+      <thead role="rowgroup" class="border-b border-line bg-canvas/60 text-xs text-accent max-lg:sr-only">
         <tr role="row">
-          <template v-for="(label, key) in columnLabels" :key="key">
-            <th v-if="key !== 'region' || showRegion" role="columnheader" scope="col" class="px-3 py-4 xl:px-4">
-              {{ label }}
-            </th>
-          </template>
+          <th v-for="(label, key) in columnLabels" :key="key" role="columnheader" scope="col" class="px-3 py-3">
+            {{ label }}
+          </th>
         </tr>
       </thead>
       <tbody role="rowgroup" class="divide-y divide-line max-lg:block">
         <tr v-for="(item, index) in items" :key="item.id ?? JSON.stringify([item.name, item.city, item.region])" role="row"
-          class="result-row align-top max-lg:grid max-lg:grid-cols-2 max-lg:gap-x-4 max-lg:gap-y-3 max-lg:p-4"
+          class="result-row align-top max-lg:grid max-lg:grid-cols-2 max-lg:gap-x-4 max-lg:gap-y-3"
           :style="{ '--row-delay': `${Math.min(index, 7) * 80}ms` }">
-          <th scope="row" role="rowheader" class="col-span-2 text-base font-semibold lg:text-sm" :class="cellClass">
+          <th scope="row" role="rowheader" class="col-span-2 text-base font-semibold lg:text-sm"
+            :class="[cellClass, { 'institution-name--editable': editable && item.id }]">
             {{ item.name }}
-            <label v-if="mailSelection && item.id && item.institutionType === 'school'"
-              class="mt-2 flex min-h-8 items-center gap-2 text-xs font-normal text-secondary">
-              <input type="checkbox" class="size-4 accent-accent" :checked="mailSelection.has(item.id)"
-                :aria-label="`Выбрать для письма: ${item.name}`"
-                :disabled="mailSelectionLocked || (!mailSelection.has(item.id) &&
-                  (mailSelection.size >= schoolMailLimit || !isSingleEmail(item.institutionEmail?.trim() ?? '')))"
-                @change="emit('toggleMail', item.id)" />
-              {{ isSingleEmail(item.institutionEmail?.trim() ?? '') ? "Выбрать для письма" : "Добавьте почту для отправки" }}
-            </label>
             <template v-if="editable && item.id">
-              <div class="mt-1 flex flex-wrap gap-x-3">
-                <button type="button" class="min-h-11 text-left text-xs font-medium text-accent underline underline-offset-2"
+              <div class="row-actions">
+                <button type="button" class="row-action" title="Редактировать"
                   :aria-label="`Редактировать ${item.name}`" @click="emit('edit', item.id)">
-                  Редактировать
+                  <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                    stroke-linecap="round" stroke-linejoin="round" class="size-3.5">
+                    <path d="m14 6 4 4M4 20l4.5-1 11-11a2.8 2.8 0 0 0-4-4l-11 11L4 20Z" />
+                  </svg>
                 </button>
                 <button type="button" :disabled="rowUpdates?.[item.id]?.pending"
-                  class="min-h-11 text-left text-xs font-medium text-accent underline underline-offset-2 disabled:opacity-50"
+                  class="row-action" :title="rowUpdates?.[item.id]?.pending ? 'Обновляю данные' : 'Обновить данные'"
                   :aria-label="`${rowUpdates?.[item.id]?.pending ? 'Обновляю данные' : 'Обновить данные'}: ${item.name}`"
+                  :aria-busy="rowUpdates?.[item.id]?.pending"
                   @click="emit('refresh', item.id)">
-                  {{ rowUpdates?.[item.id]?.pending ? "Обновляю…" : "Обновить данные" }}
+                  <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                    stroke-linecap="round" stroke-linejoin="round" class="size-3.5"
+                    :class="{ 'motion-safe:animate-spin': rowUpdates?.[item.id]?.pending }">
+                    <path d="M20 4v5h-5M4 20v-5h5M20 9a8 8 0 0 0-13.6-2.6L4 9m0 6a8 8 0 0 0 13.6 2.6L20 15" />
+                  </svg>
                 </button>
               </div>
               <p v-if="rowUpdates?.[item.id]?.message" :role="rowUpdates[item.id].error ? 'alert' : 'status'"
@@ -84,7 +80,7 @@ function orderedSources(sources: string[]): string[] {
               </p>
             </template>
             <div v-if="item.institutionType === 'school' && item.schoolEnrollment"
-              class="mt-3 rounded-lg bg-canvas px-2.5 py-2 text-xs font-normal">
+              class="mt-3 rounded-ui bg-canvas px-4 py-3 text-xs font-normal">
               <p v-if="item.schoolEnrollment.upperGrades !== null" class="font-semibold">
                 10–11 классы: {{ item.schoolEnrollment.upperGrades }}
               </p>
@@ -121,7 +117,7 @@ function orderedSources(sources: string[]): string[] {
             <span aria-hidden="true" :class="mobileLabelClass">{{ columnLabels.city }}</span>
             {{ item.city }}
           </td>
-          <td v-if="showRegion" role="cell" :class="cellClass">
+          <td role="cell" :class="cellClass">
             <span aria-hidden="true" :class="mobileLabelClass">{{ columnLabels.region }}</span>
             {{ item.region }}
           </td>
@@ -131,26 +127,48 @@ function orderedSources(sources: string[]): string[] {
             <template v-else>{{ item.leaderName ?? "—" }}</template>
           </td>
           <td role="cell" :class="cellClass">
-            <span aria-hidden="true" :class="mobileLabelClass">{{ columnLabels.email }}</span>
-            <span v-if="item.checkingContacts && !item.institutionEmail" class="motion-safe:animate-pulse text-secondary">Проверяю…</span>
-            <template v-else>{{ item.institutionEmail ?? "Не найдено" }}</template>
+            <span aria-hidden="true" :class="mobileLabelClass">{{ columnLabels.contacts }}</span>
+            <div class="space-y-1">
+              <p v-if="item.institutionEmail">{{ item.institutionEmail }}</p>
+              <p v-if="item.institutionPhone">{{ item.institutionPhone }}</p>
+              <p v-if="item.checkingContacts && (!item.institutionEmail || !item.institutionPhone)"
+                class="text-secondary motion-safe:animate-pulse">Проверяю контакты…</p>
+              <p v-else-if="!item.institutionEmail && !item.institutionPhone" class="text-secondary">Не найдены</p>
+            </div>
           </td>
-          <td role="cell" :class="cellClass">
-            <span aria-hidden="true" :class="mobileLabelClass">{{ columnLabels.phone }}</span>
-            <span v-if="item.checkingContacts && !item.institutionPhone" class="motion-safe:animate-pulse text-secondary">Проверяю…</span>
-            <template v-else>{{ item.institutionPhone ?? "Не найдено" }}</template>
-          </td>
-          <td role="cell" class="col-span-2" :class="cellClass">
-            <span aria-hidden="true" :class="mobileLabelClass">{{ columnLabels.status }}</span>
-            <span class="text-secondary">{{ item.responseStatus ? responseStatusLabels[item.responseStatus] : "Сохраняю…" }}</span>
+          <td role="cell" class="institution-status col-span-2 text-center align-middle" :class="cellClass">
+            <span aria-hidden="true" class="text-left" :class="mobileLabelClass">{{ columnLabels.status }}</span>
+            <span class="row-status" :data-status="item.responseStatus">
+              {{ item.responseStatus ? responseStatusLabels[item.responseStatus] : "Сохраняю…" }}
+            </span>
+            <Transition name="mail-action">
+              <div v-if="mailSelection && (!editable || !mailSelection.size) && item.id &&
+                item.institutionType === 'school' && isSingleEmail(item.institutionEmail?.trim() ?? '')"
+                class="mail-action-collapse">
+                <div class="mail-action-inner">
+                  <button type="button" class="row-mail mx-auto" :aria-label="'Отправить письмо: ' + item.name"
+                    :disabled="mailSelectionLocked || (!mailSelection.has(item.id) && mailSelection.size >= schoolMailLimit)"
+                    @click="emit('writeMail', item.id)">Отправить</button>
+                </div>
+              </div>
+            </Transition>
+            <label v-if="editable && mailSelection && item.id && item.institutionType === 'school'"
+              class="registry-mail-choice justify-center">
+              <input type="checkbox" class="size-4 shrink-0 accent-accent" :checked="mailSelection.has(item.id)"
+                :aria-label="`Выбрать для письма: ${item.name}`"
+                :disabled="mailSelectionLocked || (!mailSelection.has(item.id) &&
+                  (mailSelection.size >= schoolMailLimit || !isSingleEmail(item.institutionEmail?.trim() ?? '')))"
+                @change="emit('toggleMail', item.id)" />
+              {{ isSingleEmail(item.institutionEmail?.trim() ?? '') ? "Выбрать для письма" : "Добавьте почту для отправки" }}
+            </label>
           </td>
         </tr>
         <tr v-for="row in placeholders" :key="`placeholder-${row}`" aria-hidden="true"
-          class="max-lg:grid max-lg:grid-cols-2 max-lg:gap-4 max-lg:p-4">
-          <template v-for="(width, column) in ['w-3/4', 'w-2/3', 'w-1/2', 'w-2/3', 'w-3/4', 'w-full', 'w-3/4', 'w-2/3']"
+          class="max-lg:grid max-lg:grid-cols-2 max-lg:gap-4">
+          <template v-for="(width, column) in ['w-3/4', 'w-2/3', 'w-1/2', 'w-2/3', 'w-3/4', 'w-full', 'w-2/3']"
             :key="column">
-            <td v-if="column !== 3 || showRegion" :class="[cellClass, { 'col-span-2': column === 0 || column === 7 }]">
-              <span class="block h-3 max-w-36 rounded-full bg-line motion-safe:animate-pulse" :class="width"
+            <td :class="[cellClass, { 'col-span-2': column === 0 || column === 6 }]">
+              <span class="block h-3 max-w-36 rounded-ui bg-line motion-safe:animate-pulse" :class="width"
                 :style="{ animationDelay: `${row * 140 + column * 65}ms` }" />
             </td>
           </template>
@@ -161,6 +179,82 @@ function orderedSources(sources: string[]): string[] {
 </template>
 
 <style scoped>
+.institution-table--editable {
+  margin-inline-start: 1.5rem;
+  overflow: visible;
+}
+
+.institution-table--editable thead {
+  clip-path: inset(0 round calc(var(--radius-ui) - 1px) calc(var(--radius-ui) - 1px) 0 0);
+}
+
+.institution-name--editable {
+  position: relative;
+  block-size: 4.625rem;
+}
+
+.row-actions {
+  position: absolute;
+  inset-block-start: 0.375rem;
+  inset-inline-start: calc(-1rem - 1px);
+  display: grid;
+  gap: 0.125rem;
+}
+
+.row-action {
+  display: grid;
+  inline-size: 2rem;
+  block-size: 2rem;
+  place-items: center;
+  color: var(--color-accent);
+}
+
+.row-action::before,
+.row-action svg {
+  grid-area: 1 / 1;
+}
+
+.row-action::before {
+  content: "";
+  inline-size: 1.5rem;
+  block-size: 1.5rem;
+  border: 1px solid var(--color-line);
+  border-radius: 50%;
+  background-color: var(--color-surface);
+}
+
+.row-action:enabled:hover::before {
+  border-color: var(--color-accent);
+  background-color: var(--color-accent-soft);
+}
+
+.row-action:focus-visible::before {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.row-action:disabled {
+  opacity: 0.65;
+}
+
+@media (min-width: 64rem) {
+  .institution-table td.institution-status {
+    padding: 0.75rem;
+  }
+}
+
+@media (width < 64rem) {
+  .institution-name--editable {
+    block-size: auto;
+    min-block-size: 4.125rem;
+  }
+
+  .row-actions {
+    inset-block-start: 0;
+    inset-inline-start: calc(-2.25rem - 1px);
+  }
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .result-row {
     animation: reveal-row 220ms ease-out var(--row-delay) both;

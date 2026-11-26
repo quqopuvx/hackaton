@@ -1,24 +1,27 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { isSingleEmail, personalizeSchoolMail, schoolMailDraft, schoolMailLimit, schoolMailTemplates, schoolMailTextLimit, schoolNameToken } from "../../lib/school-mail";
-import type { SavedSchoolMailTemplate, SchoolMailOutcome, SchoolMailTemplate } from "../../lib/school-mail";
+import { isSingleEmail, personalizeSchoolMail, schoolMailDefaultLayout, schoolMailDraft, schoolMailLayouts, schoolMailLimit, schoolMailSubjectLimit, schoolMailTemplates, schoolMailTextLimit, schoolNameToken } from "../../lib/school-mail";
+import type { SavedSchoolMailTemplate, SchoolMailLayout, SchoolMailOutcome, SchoolMailTemplate } from "../../lib/school-mail";
 import type { Institution } from "../../lib/types";
+import SchoolMailPreview from "./SchoolMailPreview.vue";
 
 const props = defineProps<{ schools: Institution[]; savedTemplates: SavedSchoolMailTemplate[]; reminderPreset: boolean }>();
-const emit = defineEmits<{ lock: []; reset: []; sent: [] }>();
+const emit = defineEmits<{ lock: []; unlock: []; reset: []; sent: [] }>();
 const template = ref(props.reminderPreset ? "reminder" : "");
 const draft = ref("");
 const selectedTemplate = computed(() => {
   if (Object.hasOwn(schoolMailTemplates, template.value)) {
     const key = template.value as SchoolMailTemplate;
-    return { subject: schoolMailTemplates[key], text: schoolMailDraft(key) };
+    return { subject: schoolMailTemplates[key], text: schoolMailDraft(key), layout: schoolMailDefaultLayout(key) };
   }
   return props.savedTemplates.find(({ id }) => id === template.value);
 });
 const subject = ref("");
+const layout = ref<SchoolMailLayout>("plain");
 function restoreTemplate(): void {
   draft.value = selectedTemplate.value?.text ?? "";
   subject.value = selectedTemplate.value?.subject ?? "";
+  layout.value = selectedTemplate.value?.layout ?? "plain";
 }
 watch(template, restoreTemplate, { immediate: true });
 const accessCode = ref("");
@@ -26,16 +29,19 @@ const previewId = ref("");
 const busy = ref(false);
 const error = ref("");
 const outcomes = ref<SchoolMailOutcome[]>();
-const snapshot = ref<{ requestId: string; template: string; schools: Institution[]; text: string; subject: string }>();
+const snapshot = ref<{
+  requestId: string; template: string; schools: Institution[]; text: string; subject: string; layout: SchoolMailLayout;
+}>();
 const schools = computed(() => snapshot.value?.schools ?? props.schools);
 const previewSchool = computed(() => schools.value.find((school) => school.id === previewId.value) ?? schools.value[0]);
-const preview = computed(() => subject.value && previewSchool.value ? {
-  subject: snapshot.value?.subject ?? subject.value,
+const preview = computed(() => subject.value.trim() && previewSchool.value ? {
+  subject: snapshot.value?.subject ?? subject.value.trim(),
   text: personalizeSchoolMail(snapshot.value?.text ?? draft.value, previewSchool.value.name),
+  layout: snapshot.value?.layout ?? layout.value,
 } : undefined);
 const valid = computed(() => schools.value.every((school) =>
   school.institutionType === "school" && isSingleEmail(school.institutionEmail?.trim() ?? "")));
-const canSubmit = computed(() => template.value && subject.value && draft.value.trim() && draft.value.length <= schoolMailTextLimit &&
+const canSubmit = computed(() => template.value && subject.value.trim() && draft.value.trim() && draft.value.length <= schoolMailTextLimit &&
   valid.value && accessCode.value && !busy.value &&
   (!outcomes.value || outcomes.value.some((result) => result.status === "sending")));
 const resultLabels = {
@@ -47,16 +53,17 @@ const resultLabels = {
 } satisfies Record<SchoolMailOutcome["status"], string>;
 const outcomeById = computed(() => new Map(outcomes.value?.map((outcome) => [outcome.id, outcome])));
 const acceptedCount = computed(() => outcomes.value?.filter((outcome) => outcome.status === "sent").length ?? 0);
-const controlClass = "min-h-11 w-full rounded-xl border border-line bg-canvas px-3 text-sm text-ink";
+const controlClass = "min-h-11 w-full rounded-ui border border-line bg-canvas px-3 text-sm text-ink";
 
 async function send(): Promise<void> {
   if (!canSubmit.value || !template.value) return;
   busy.value = true;
   error.value = "";
+  const retrying = !!snapshot.value;
   try {
     const request = snapshot.value ??= {
       requestId: crypto.randomUUID(), template: template.value, schools: [...props.schools],
-      text: draft.value.trim(), subject: subject.value,
+      text: draft.value.trim(), subject: subject.value.trim(), layout: layout.value,
     };
     emit("lock");
     const response = await fetch("/api/school-mail", {
@@ -64,12 +71,21 @@ async function send(): Promise<void> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         requestId: request.requestId, template: request.template, accessCode: accessCode.value, text: request.text, subject: request.subject,
+        layout: request.layout,
         recipients: request.schools.map((school) => ({ id: school.id, email: school.institutionEmail?.trim() })),
       }),
     });
     const result = await response.json();
     if (!response.ok) {
       error.value = result.error ?? "Не удалось запросить отправку.";
+      if (response.status === 403) {
+        accessCode.value = "";
+        // A first attempt rejected by authorization never reached mail delivery.
+        if (!retrying) {
+          snapshot.value = undefined;
+          emit("unlock");
+        }
+      }
       return;
     }
     outcomes.value = result.outcomes;
@@ -84,7 +100,7 @@ async function send(): Promise<void> {
 </script>
 
 <template>
-  <section id="school-mail" class="min-w-0 rounded-2xl border border-line bg-surface p-4 sm:p-5" aria-labelledby="school-mail-title">
+  <section id="school-mail" class="min-w-0 rounded-ui border border-line bg-surface p-4 sm:p-5" aria-labelledby="school-mail-title">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <h3 id="school-mail-title" class="text-lg font-semibold">Письма школам</h3>
       <button type="button" class="min-h-11 text-sm font-medium text-accent disabled:opacity-50"
@@ -120,6 +136,16 @@ async function send(): Promise<void> {
         </label>
       </div>
       <div v-if="template && !snapshot" class="grid gap-2">
+        <label class="grid gap-1 text-sm font-medium">
+          Тема письма
+          <input v-model="subject" :maxlength="schoolMailSubjectLimit" :class="controlClass" required />
+        </label>
+        <label class="grid gap-1 text-sm font-medium">
+          Оформление письма
+          <select v-model="layout" :class="controlClass">
+            <option v-for="(label, key) in schoolMailLayouts" :key="key" :value="key">{{ label }}</option>
+          </select>
+        </label>
         <label for="school-mail-text" class="text-sm font-medium">Текст письма</label>
         <textarea id="school-mail-text" v-model="draft" rows="7" :maxlength="schoolMailTextLimit" required
           aria-describedby="school-mail-personalization" :class="controlClass" class="resize-y py-3" />
@@ -130,11 +156,7 @@ async function send(): Promise<void> {
           </button>
         </div>
       </div>
-      <div v-if="preview" class="rounded-xl border border-line bg-canvas p-4 text-sm [overflow-wrap:anywhere]">
-        <p class="mb-2 text-xs font-medium text-secondary">Предпросмотр</p>
-        <p class="font-semibold">{{ preview.subject }}</p>
-        <p class="mt-2 whitespace-pre-wrap">{{ preview.text }}</p>
-      </div>
+      <SchoolMailPreview v-if="preview" v-bind="preview" />
       <p v-if="error" role="alert" class="text-sm text-danger">{{ error }}</p>
       <p v-if="!valid" role="alert" class="text-sm text-danger">В выбранном списке есть школа с изменёнными данными. Проверьте карточки.</p>
       <p v-if="outcomes" role="status" class="text-sm font-medium">Почтовый сервер принял {{ acceptedCount }} из {{ schools.length }} писем.</p>
@@ -145,7 +167,7 @@ async function send(): Promise<void> {
           <input v-model="accessCode" :class="controlClass" type="password" autocomplete="off" :disabled="busy" required />
         </label>
         <button type="submit" :disabled="!canSubmit"
-          class="min-h-11 rounded-xl bg-accent px-4 text-sm font-semibold text-white disabled:opacity-50">
+          class="min-h-11 rounded-ui bg-accent px-4 text-sm font-semibold text-white disabled:opacity-50">
           {{ busy ? "Отправка…" : snapshot ? "Повторить запрос отправки" : "Подтвердить и отправить" }}
         </button>
       </div>

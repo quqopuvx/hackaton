@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import type { SchoolReply } from "../../lib/school-mail";
+import { fetchSchoolReplies } from "../mail-replies";
 
 const props = defineProps<{ active: boolean }>();
-const emit = defineEmits<{ synced: [] }>();
+const emit = defineEmits<{ synced: [replies: SchoolReply[]] }>();
 const loading = ref(false);
 const loaded = ref(false);
 const error = ref("");
@@ -42,19 +43,9 @@ async function refresh(): Promise<void> {
   loading.value = true;
   error.value = "";
   try {
-    const response = await fetch("/api/school-mail/replies", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-      signal: AbortSignal.timeout(50_000),
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error ?? "Не удалось загрузить ответы.");
-    }
+    replies.value = await fetchSchoolReplies();
     loaded.value = true;
-    replies.value = data.replies;
-    emit("synced");
+    emit("synced", replies.value);
   } catch (cause) {
     error.value = cause instanceof Error && cause.name === "Error" ? cause.message : "Не удалось загрузить ответы.";
   } finally {
@@ -76,7 +67,7 @@ watch(() => props.active, (active, _, onCleanup) => {
 <template>
   <section aria-labelledby="school-replies-title" class="rounded-ui border border-line bg-surface p-4 sm:p-5">
     <div class="flex flex-wrap items-center justify-between gap-2">
-      <h3 id="school-replies-title" class="text-lg font-semibold">Ответы от школ</h3>
+      <h3 id="school-replies-title" class="text-lg font-semibold">Ответы на письма</h3>
       <button type="button" :disabled="loading"
         class="min-h-11 rounded-ui border border-line px-4 text-sm font-medium text-accent disabled:opacity-50"
         @click="refresh">{{ loading ? "Обновляю…" : "Обновить" }}</button>
@@ -84,11 +75,11 @@ watch(() => props.active, (active, _, onCleanup) => {
     <p v-if="error" role="alert" class="mt-3 text-sm text-danger">{{ error }}</p>
     <p v-else-if="loading && !loaded" role="status" class="mt-3 text-sm text-secondary">Загружаю ответы…</p>
     <p v-else-if="loaded && !replies.length" role="status" class="mt-3 text-sm text-secondary">
-      Ответов на письма школам пока нет.
+      Ответов на письма пока нет.
     </p>
     <div v-if="schools.size" class="mt-4 grid border-t border-line [overflow-wrap:anywhere] md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
       <div class="min-w-0 py-4 md:border-r md:border-line md:pr-4" :class="{ 'max-md:hidden': selectedSchool }">
-        <h4 ref="schoolListHeading" tabindex="-1" class="text-sm font-semibold focus-visible:outline-accent">Школы с ответами</h4>
+        <h4 ref="schoolListHeading" tabindex="-1" class="text-sm font-semibold focus-visible:outline-accent">Учреждения с ответами</h4>
         <ul class="mt-2 space-y-1">
           <li v-for="school in schools.values()" :key="school.schoolId">
             <button type="button"
@@ -107,7 +98,7 @@ watch(() => props.active, (active, _, onCleanup) => {
       </div>
       <section v-if="selectedSchool" aria-labelledby="selected-school-replies" class="min-w-0 py-4 md:pl-5">
         <button type="button" class="mb-2 min-h-11 text-sm font-medium text-accent md:hidden"
-          @click="returnToSchools">← К списку школ</button>
+          @click="returnToSchools">← К списку учреждений</button>
         <h4 id="selected-school-replies" ref="replyHeading" tabindex="-1" class="font-semibold focus-visible:outline-accent">
           {{ selectedSchool.name }}
         </h4>
@@ -122,7 +113,7 @@ watch(() => props.active, (active, _, onCleanup) => {
           </li>
         </ul>
       </section>
-      <p v-else class="hidden p-5 text-sm text-secondary md:block">Выберите школу, чтобы прочитать её ответы.</p>
+      <p v-else class="hidden p-5 text-sm text-secondary md:block">Выберите учреждение, чтобы прочитать его ответы.</p>
     </div>
   </section>
 </template>

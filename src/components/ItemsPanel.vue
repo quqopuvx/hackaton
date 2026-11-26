@@ -142,17 +142,17 @@ function orderedSources(sources: string[]): string[] {
               {{ item.responseStatus ? responseStatusLabels[item.responseStatus] : "Сохраняю…" }}
             </span>
             <Transition name="mail-action">
-              <div v-if="mailSelection && (!editable || !mailSelection.size) && item.id &&
-                item.institutionType === 'school' && isSingleEmail(item.institutionEmail?.trim() ?? '')"
+              <div v-if="mailSelection && !mailSelection.size && item.id &&
+                isSingleEmail(item.institutionEmail?.trim() ?? '')"
                 class="mail-action-collapse">
                 <div class="mail-action-inner">
-                  <button type="button" class="row-mail mx-auto" :aria-label="'Отправить письмо: ' + item.name"
+                  <button type="button" class="row-mail mx-auto" :aria-label="'Подготовить письмо: ' + item.name"
                     :disabled="mailSelectionLocked || (!mailSelection.has(item.id) && mailSelection.size >= schoolMailLimit)"
-                    @click="emit('writeMail', item.id)">Отправить</button>
+                    @click="emit('writeMail', item.id)">К письму</button>
                 </div>
               </div>
             </Transition>
-            <label v-if="editable && mailSelection && item.id && item.institutionType === 'school'"
+            <label v-if="mailSelection && item.id"
               class="registry-mail-choice justify-center">
               <input type="checkbox" class="size-4 shrink-0 accent-accent" :checked="mailSelection.has(item.id)"
                 :aria-label="`Выбрать для письма: ${item.name}`"

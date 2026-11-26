@@ -4,10 +4,11 @@ import type { Institution, InstitutionDetails, InstitutionEdits } from "./types.
 import { schoolMailTemplates } from "./school-mail.ts";
 import type { SavedSchoolMailTemplate, SchoolMailHistoryEntry, SchoolMailOutcome, SchoolMailRecipient, SchoolMailReminder, SchoolMailTemplate } from "./school-mail.ts";
 import { inferInstitutionType } from "./institution-types.ts";
+import type { Campaign, CampaignDetails, CampaignState, CampaignSummary, CampaignView } from "./campaigns.ts";
 
 let ready: Promise<Pool> | undefined;
 
-function database(): Promise<Pool> {
+export function database(): Promise<Pool> {
   ready ??= initialize().catch((cause: unknown) => {
     ready = undefined;
     console.error("PostgreSQL:", cause instanceof Error ? cause.message : cause);
@@ -98,23 +99,117 @@ export async function findInstitution(id: string): Promise<Institution | undefin
 
 type DeliveryStatus = Exclude<SchoolMailOutcome["status"], "skipped">;
 
+const campaignFields = `id, title, schedule, registration_url AS "registrationUrl", version, state`;
+
+export async function listCampaigns(): Promise<CampaignSummary[]> {
+  const pool = await database();
+  return (await pool.query<CampaignSummary>(
+    "SELECT id, title FROM outreach_campaigns ORDER BY created_at DESC, id",
+  )).rows;
+}
+
+export async function createCampaign(id: string, title: string): Promise<Campaign> {
+  const pool = await database();
+  return (await pool.query<Campaign>(
+    `INSERT INTO outreach_campaigns (id, title) VALUES ($1, $2) RETURNING ${campaignFields}`,
+    [id, title],
+  )).rows[0];
+}
+
+export async function findCampaign(id: string): Promise<Campaign | undefined> {
+  const pool = await database();
+  return (await pool.query<Campaign>(`SELECT ${campaignFields} FROM outreach_campaigns WHERE id = $1`, [id])).rows[0];
+}
+
+export async function deleteCampaign(id: string, version: number): Promise<boolean> {
+  const pool = await database();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rowCount } = await client.query(
+      "SELECT id FROM outreach_campaigns WHERE id = $1 AND version = $2 FOR UPDATE", [id, version],
+    );
+    if (!rowCount) {
+      await client.query("ROLLBACK");
+      return false;
+    }
+    await client.query("UPDATE school_mail_deliveries SET campaign_id = NULL WHERE campaign_id = $1", [id]);
+    await client.query("DELETE FROM outreach_campaigns WHERE id = $1", [id]);
+    await client.query("COMMIT");
+    return true;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function updateCampaignDetails(id: string, version: number, details: CampaignDetails): Promise<Campaign | undefined> {
+  const pool = await database();
+  return (await pool.query<Campaign>(
+    `UPDATE outreach_campaigns SET title = $3, schedule = $4, registration_url = $5, version = version + 1,
+       state = jsonb_set(state, '{draft}', 'null'::jsonb)
+     WHERE id = $1 AND version = $2 RETURNING ${campaignFields}`,
+    [id, version, details.title, details.schedule, details.registrationUrl],
+  )).rows[0];
+}
+
+export async function saveCampaignTurn(id: string, version: number, state: CampaignState): Promise<Campaign | undefined> {
+  const pool = await database();
+  return (await pool.query<Campaign>(
+    `UPDATE outreach_campaigns SET state = $3, version = version + 1
+      WHERE id = $1 AND version = $2 RETURNING ${campaignFields}`,
+    [id, version, JSON.stringify(state)],
+  )).rows[0];
+}
+
+export async function readCampaignView(campaign: Campaign): Promise<CampaignView> {
+  const pool = await database();
+  const choiceIds = campaign.state.schoolChoiceIds ?? [];
+  const [schools, deliveries] = await Promise.all([
+    pool.query<Institution>(
+      `SELECT ${fields} FROM institutions WHERE id = ANY($1::bigint[])`,
+      [[...campaign.state.schoolIds, ...choiceIds]],
+    ),
+    pool.query<{ id: string; status: DeliveryStatus }>(
+      `SELECT DISTINCT ON (institution_id) institution_id::text AS id,
+         CASE WHEN status = 'sending' AND created_at < now() - interval '10 minutes' THEN 'uncertain'
+              ELSE status END AS status
+       FROM school_mail_deliveries WHERE campaign_id = $1
+       ORDER BY institution_id, (status <> 'failed') DESC, created_at DESC`,
+      [campaign.id],
+    ),
+  ]);
+  const schoolsById = new Map(schools.rows.filter((school) => school.institutionType === "school").map((school) => [school.id, school]));
+  const inOrder = (ids: string[]) => ids.flatMap((id) => {
+    const school = schoolsById.get(id);
+    return school ? [school] : [];
+  });
+  return { ...campaign, schools: inOrder(campaign.state.schoolIds), schoolChoices: inOrder(choiceIds), deliveries: deliveries.rows };
+}
+
 export async function claimSchoolMail(
   requestId: string, recipient: SchoolMailRecipient, template: string, subject: string,
+  campaignId: string | null = null,
 ): Promise<DeliveryStatus | "claimed"> {
   const pool = await database();
-  const args = [requestId, recipient.id, recipient.email, template, subject];
+  const args = [requestId, recipient.id, recipient.email, template, subject, campaignId];
   const insert = await pool.query(
-    `INSERT INTO school_mail_deliveries (request_id, institution_id, recipient, template, subject, status)
-     VALUES ($1, $2, $3, $4, $5, 'sending') ON CONFLICT DO NOTHING`,
+    `INSERT INTO school_mail_deliveries (request_id, institution_id, recipient, template, subject, status, campaign_id)
+     VALUES ($1, $2, $3, $4, $5, 'sending', $6) ON CONFLICT DO NOTHING`,
     args,
   );
   if (insert.rowCount) return "claimed";
   const previous = await pool.query<{ status: DeliveryStatus }>(
     `SELECT CASE
-       WHEN recipient <> $3 OR template <> $4 OR subject <> $5 THEN 'uncertain'
+       WHEN request_id = $1 AND (recipient <> $3 OR template <> $4 OR subject <> $5 OR campaign_id IS DISTINCT FROM $6)
+         THEN 'uncertain'
        WHEN status = 'sending' AND created_at < now() - interval '10 minutes' THEN 'uncertain'
        ELSE status END AS status
-     FROM school_mail_deliveries WHERE request_id = $1 AND institution_id = $2`,
+     FROM school_mail_deliveries
+     WHERE institution_id = $2 AND (request_id = $1 OR (campaign_id = $6 AND status IN ('sending', 'sent', 'uncertain')))
+     ORDER BY (request_id = $1) DESC LIMIT 1`,
     args,
   );
   return previous.rows[0]?.status ?? "uncertain";
@@ -175,7 +270,7 @@ export async function listSchoolMailHistory(page: number): Promise<{ entries: Sc
   return { entries, hasMore: rows.length > pageSize };
 }
 
-export async function listSchoolMailReminders(days: number): Promise<SchoolMailReminder[]> {
+export async function listSchoolMailReminders(days: number, includeReplied = false): Promise<SchoolMailReminder[]> {
   const pool = await database();
   const { rows } = await pool.query<SchoolMailReminder>(
     `SELECT i.id::text AS "schoolId", COALESCE(i.manual_edits->>'name', i.name) AS "schoolName",
@@ -187,23 +282,37 @@ export async function listSchoolMailReminders(days: number): Promise<SchoolMailR
        WHERE d.institution_id = i.id AND d.status = 'sent'
        ORDER BY sent_at DESC LIMIT 1
      ) latest ON true
-     WHERE i.response_status = 'awaiting_reply'
-       AND (CASE WHEN i.manual_edits ? 'institutionType' THEN i.manual_edits->>'institutionType' ELSE i.institution_type END) = 'school'
+     WHERE (i.response_status = 'awaiting_reply' OR ($2 AND i.response_status = 'replied'))
        AND latest.sent_at <= now() - $1 * interval '1 day'
      ORDER BY latest.sent_at, i.id`,
-    [days],
+    [days, includeReplied],
   );
   return rows;
 }
 
 export async function listSchoolMailTemplates(): Promise<SavedSchoolMailTemplate[]> {
   const pool = await database();
-  return (await pool.query<SavedSchoolMailTemplate>("SELECT id, name, subject, text, layout FROM school_mail_templates ORDER BY name, id")).rows;
+  return (await pool.query<SavedSchoolMailTemplate>("SELECT id, name, subject, text, layout, (design IS NOT NULL) AS \"hasDesign\" FROM school_mail_templates ORDER BY name, id")).rows;
+}
+
+export async function deleteSchoolMailTemplate(id: string): Promise<boolean> {
+  const pool = await database();
+  const result = await pool.query("DELETE FROM school_mail_templates WHERE id = $1", [id]);
+  return result.rowCount === 1;
+}
+
+export async function hasSchoolMailRequest(requestId: string, template: string): Promise<boolean> {
+  const pool = await database();
+  const result = await pool.query(
+    "SELECT 1 FROM school_mail_deliveries WHERE request_id = $1 AND template = $2 LIMIT 1",
+    [requestId, template],
+  );
+  return result.rows.length > 0;
 }
 
 export async function findSchoolMailTemplate(id: string): Promise<SavedSchoolMailTemplate | undefined> {
   const pool = await database();
-  return (await pool.query<SavedSchoolMailTemplate>("SELECT id, name, subject, text, layout FROM school_mail_templates WHERE id = $1", [id])).rows[0];
+  return (await pool.query<SavedSchoolMailTemplate>(`SELECT id, name, subject, text, layout, design, (design IS NOT NULL) AS "hasDesign" FROM school_mail_templates WHERE id = $1`, [id])).rows[0];
 }
 
 export async function saveSchoolMailTemplate(
@@ -212,11 +321,15 @@ export async function saveSchoolMailTemplate(
 ): Promise<SavedSchoolMailTemplate | undefined> {
   const pool = await database();
   const sql = update
-    ? `UPDATE school_mail_templates SET name = $2, subject = $3, text = $4, layout = COALESCE($5, layout)
-       WHERE id = $1 RETURNING id, name, subject, text, layout`
-    : `INSERT INTO school_mail_templates (id, name, subject, text, layout)
-       VALUES ($1, $2, $3, $4, COALESCE($5, 'plain')) RETURNING id, name, subject, text, layout`;
-  return (await pool.query<SavedSchoolMailTemplate>(sql, [template.id, template.name, template.subject, template.text, template.layout])).rows[0];
+    ? `UPDATE school_mail_templates SET name = $2, subject = $3, text = $4, layout = COALESCE($5, layout),
+       design = CASE WHEN $7 THEN $6::jsonb ELSE design END
+       WHERE id = $1 RETURNING id, name, subject, text, layout, design, (design IS NOT NULL) AS "hasDesign"`
+    : `INSERT INTO school_mail_templates (id, name, subject, text, layout, design)
+       VALUES ($1, $2, $3, $4, COALESCE($5, 'plain'), $6)
+       RETURNING id, name, subject, text, layout, design, (design IS NOT NULL) AS "hasDesign"`;
+  const values = [template.id, template.name, template.subject, template.text, template.layout,
+    template.design ? JSON.stringify(template.design) : null];
+  return (await pool.query<SavedSchoolMailTemplate>(sql, update ? [...values, template.design !== undefined] : values)).rows[0];
 }
 
 export async function markSchoolsReplied(ids: string[]): Promise<void> {

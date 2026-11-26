@@ -1,49 +1,59 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
+import type { CampaignMailPreset } from "../../lib/campaigns";
 import { isSingleEmail, schoolMailLimit } from "../../lib/school-mail";
-import type { SavedSchoolMailTemplate } from "../../lib/school-mail";
+import type { SavedSchoolMailTemplate, SchoolMailOutcome, SchoolReply } from "../../lib/school-mail";
 import type { Institution } from "../../lib/types";
 import SchoolMailPanel from "./SchoolMailPanel.vue";
 import SchoolRepliesPanel from "./SchoolRepliesPanel.vue";
 import SchoolMailHistory from "./SchoolMailHistory.vue";
-import SchoolMailTemplates from "./SchoolMailTemplates.vue";
+import type { Preferences } from "../preferences";
 
 const props = defineProps<{
   institutions: Institution[];
   selected: Set<string>;
-  selectedSchools: Institution[];
+  selectedRecipients: Institution[];
   locked: boolean;
   loading: boolean;
   error: string;
   active: boolean;
   composeRequest: number;
+  savedTemplates: SavedSchoolMailTemplate[];
+  preferences: Preferences;
+  campaignMail?: CampaignMailPreset;
 }>();
 
-const emit = defineEmits<{ toggle: [id: string]; chooseRecipients: [ids: string[]]; lock: []; unlock: []; reset: []; sent: [] }>();
+const emit = defineEmits<{
+  toggle: [id: string]; chooseRecipients: [ids: string[]]; lock: []; unlock: []; reset: []; sent: [];
+  replies: [replies: SchoolReply[]]; delivery: [requestId: string, outcomes: SchoolMailOutcome[]];
+  deliveryError: [requestId: string, message: string]; returnToRecipients: []; templateSaved: [template: SavedSchoolMailTemplate];
+}>();
 const query = ref("");
-const tabs = { compose: "Отправка", replies: "Ответы от школ", history: "Отправленные", templates: "Шаблоны" } as const;
+const tabs = { compose: "Отправка", replies: "Ответы", history: "Отправленные" } as const;
 const panel = ref<keyof typeof tabs>("compose");
-const savedTemplates = ref<SavedSchoolMailTemplate[]>([]);
-const templateError = ref("");
 const composerKey = ref(0);
+const composerOpened = ref(false);
 const reminderPreset = ref(false);
-watch(() => props.composeRequest, () => { panel.value = "compose"; });
-watch(() => props.selectedSchools.length, (count) => { if (!count) reminderPreset.value = false; });
-watch(() => props.active && (panel.value === "compose" || panel.value === "templates"), async (active) => {
-  if (!active) return;
-  templateError.value = "";
-  try {
-    const response = await fetch("/api/school-mail/templates");
-    if (!response.ok) throw new Error("Не удалось загрузить шаблоны.");
-    savedTemplates.value = (await response.json()).templates;
-  } catch {
-    templateError.value = "Не удалось загрузить сохранённые шаблоны.";
+watch(() => props.composeRequest, async () => {
+  panel.value = "compose";
+  await nextTick();
+  document.getElementById("school-mail-title")?.focus();
+});
+watch(() => props.campaignMail, () => {
+  composerKey.value++;
+  if (props.campaignMail) {
+    reminderPreset.value = false;
+    query.value = "";
   }
+});
+watch(() => props.selectedRecipients.length, (count) => {
+  if (count) composerOpened.value = true;
 }, { immediate: true });
 
-function updateTemplates(template: SavedSchoolMailTemplate): void {
-  savedTemplates.value = [...savedTemplates.value.filter((item) => item.id !== template.id), template]
-    .sort((a, b) => a.name.localeCompare(b.name, "ru"));
+function resetComposer(): void {
+  composerOpened.value = false;
+  reminderPreset.value = false;
+  emit("reset");
 }
 
 function prepareReminder(ids: string[]): void {
@@ -55,11 +65,12 @@ function prepareReminder(ids: string[]): void {
   panel.value = "compose";
 }
 const normalize = (value: string) => value.toLocaleLowerCase("ru").replace(/ё/g, "е");
-const schools = computed(() => props.institutions.filter((school) => school.institutionType === "school"));
-const visibleSchools = computed(() => {
+const visibleInstitutions = computed(() => {
   const terms = normalize(query.value).trim().split(/\s+/).filter(Boolean);
-  return schools.value.filter((school) => {
-    const text = normalize([school.name, school.city, school.region, school.institutionEmail].join(" "));
+  return props.institutions.filter((institution) => {
+    if (props.campaignMail && (institution.institutionType !== "school" ||
+        !props.campaignMail.recipientIds.includes(institution.id))) return false;
+    const text = normalize([institution.name, institution.city, institution.region, institution.institutionEmail].join(" "));
     return terms.every((term) => text.includes(term));
   });
 });
@@ -74,51 +85,52 @@ const visibleSchools = computed(() => {
         :aria-pressed="panel === key" :class="panel === key ? 'border-accent text-accent' : 'border-transparent text-secondary'"
         @click="panel = key">{{ label }}</button>
     </nav>
-    <SchoolRepliesPanel v-show="panel === 'replies'" :active="active && panel === 'replies'" @synced="emit('sent')" />
+    <SchoolRepliesPanel v-show="panel === 'replies'" :active="active && panel === 'replies'" @synced="emit('sent'); emit('replies', $event)" />
     <SchoolMailHistory v-show="panel === 'history'" :active="active && panel === 'history'" :locked="locked"
-      @prepare="prepareReminder" />
-    <SchoolMailTemplates v-show="panel === 'templates'" :templates="savedTemplates" :load-error="templateError"
-      @saved="updateTemplates" />
+      :default-days="preferences.reminderDays" :exclude-replied="preferences.excludeReplied" @prepare="prepareReminder" />
     <div v-show="panel === 'compose'" class="grid items-start gap-4 lg:grid-cols-2">
       <section class="min-w-0 rounded-ui border border-line bg-surface p-4 sm:p-5" aria-labelledby="mail-recipients-title">
-        <h3 id="mail-recipients-title" class="text-lg font-semibold">Выбор школ</h3>
+        <h3 id="mail-recipients-title" class="text-lg font-semibold">Выбор получателей</h3>
         <label class="mt-3 grid gap-1 text-sm font-medium">
-          Поиск школы
+          Поиск учреждения
           <input v-model="query" type="search" placeholder="Название, город, регион или почта"
             class="min-h-11 rounded-ui border border-line bg-canvas px-3 text-sm focus-visible:outline-accent" />
         </label>
         <p class="mt-3 text-sm text-secondary" aria-live="polite">Выбрано {{ selected.size }} из {{ schoolMailLimit }}</p>
         <p v-if="error" role="alert" class="mt-3 text-sm text-danger">{{ error }}</p>
-        <p v-else-if="loading && !schools.length" class="mt-3 text-sm text-secondary">Загружаю школы…</p>
-        <p v-else-if="!schools.length" class="mt-3 text-sm text-secondary">
-          В реестре пока нет школ. Найдите школы в разделе «Поиск».
+        <p v-else-if="loading && !institutions.length" class="mt-3 text-sm text-secondary">Загружаю учреждения…</p>
+        <p v-else-if="!institutions.length" class="mt-3 text-sm text-secondary">
+          В реестре пока нет учреждений. Добавьте их через раздел «Поиск».
         </p>
-        <p v-else-if="!visibleSchools.length" class="mt-3 text-sm text-secondary">По запросу школы не найдены.</p>
+        <p v-else-if="!visibleInstitutions.length" class="mt-3 text-sm text-secondary">Получатели не найдены.</p>
         <ul v-else class="mt-3 max-h-[50vh] divide-y divide-line overflow-y-auto">
-          <li v-for="school in visibleSchools" :key="school.id">
+          <li v-for="institution in visibleInstitutions" :key="institution.id">
             <label class="flex min-h-12 items-start gap-3 py-3 text-sm [overflow-wrap:anywhere]">
-              <input type="checkbox" class="mt-0.5 size-4 shrink-0 accent-accent" :checked="selected.has(school.id)"
-                :aria-label="`Выбрать для письма: ${school.name}`"
-                :disabled="locked || (!selected.has(school.id) &&
-                  (selected.size >= schoolMailLimit || !isSingleEmail(school.institutionEmail?.trim() ?? '')))"
-                @change="emit('toggle', school.id)" />
+              <input type="checkbox" class="mt-0.5 size-4 shrink-0 accent-accent" :checked="selected.has(institution.id)"
+                :aria-label="`Выбрать для письма: ${institution.name}`"
+                :disabled="locked || (!selected.has(institution.id) &&
+                  (selected.size >= schoolMailLimit || !isSingleEmail(institution.institutionEmail?.trim() ?? '')))"
+                @change="emit('toggle', institution.id)" />
               <span class="min-w-0">
-                <span class="font-medium">{{ school.name }}</span>
-                <span class="block text-xs text-secondary">{{ school.city }} · {{ school.region }}</span>
+                <span class="font-medium">{{ institution.name }}</span>
+                <span class="block text-xs text-secondary">{{ institution.city }} · {{ institution.region }}</span>
                 <span class="block text-xs text-secondary">
-                  {{ isSingleEmail(school.institutionEmail?.trim() ?? '') ? school.institutionEmail : "Добавьте почту в карточке школы" }}
+                  {{ isSingleEmail(institution.institutionEmail?.trim() ?? '') ? institution.institutionEmail : "Добавьте почту в карточке учреждения" }}
                 </span>
               </span>
             </label>
           </li>
         </ul>
       </section>
-      <SchoolMailPanel v-if="selectedSchools.length" :key="composerKey" :schools="selectedSchools"
-        :saved-templates="savedTemplates" :reminder-preset="reminderPreset"
-        @lock="emit('lock')" @unlock="emit('unlock')" @reset="emit('reset')" @sent="emit('sent')" />
+      <SchoolMailPanel v-if="composerOpened" :key="composerKey" :recipients="selectedRecipients"
+        :saved-templates="savedTemplates" :reminder-preset="reminderPreset" :campaign-mail="campaignMail"
+        :active="active && panel === 'compose'" :default-template="preferences.defaultTemplate" :signature="preferences.signature" :reply-to="preferences.replyTo"
+        @delivery="(id, outcomes) => emit('delivery', id, outcomes)" @delivery-error="(id, message) => emit('deliveryError', id, message)"
+        @lock="emit('lock')" @unlock="emit('unlock')" @reset="resetComposer" @sent="emit('sent')"
+        @return-to-recipients="emit('returnToRecipients')" @template-saved="emit('templateSaved', $event)" />
       <section v-else class="rounded-ui border border-line bg-surface p-4 sm:p-5">
-        <h3 class="text-lg font-semibold">Письма школам</h3>
-        <p class="mt-2 text-sm text-secondary">Отметьте хотя бы одну школу, чтобы выбрать шаблон и посмотреть письмо.</p>
+        <h3 class="text-lg font-semibold">Письма учреждениям</h3>
+        <p class="mt-2 text-sm text-secondary">Выберите получателя, чтобы выбрать шаблон и посмотреть письмо.</p>
       </section>
     </div>
   </section>

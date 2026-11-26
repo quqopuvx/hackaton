@@ -8,7 +8,8 @@
     "build": "vue-tsc --noEmit && vite build",
     "start": "tsx server/index.ts",
     "preview": "npm run start",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "accounts:setup": "tsx server/setup-accounts.ts"
   },
   "dependencies": {
     "@fontsource/geist-mono": "^5.3.0",

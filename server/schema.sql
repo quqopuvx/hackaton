@@ -51,3 +51,47 @@ CREATE TABLE IF NOT EXISTS school_mail_templates (
 
 ALTER TABLE school_mail_templates ADD COLUMN IF NOT EXISTS layout text NOT NULL DEFAULT 'plain'
   CHECK (layout IN ('plain', 'promotion', 'invitation', 'newsletter'));
+
+ALTER TABLE school_mail_templates ADD COLUMN IF NOT EXISTS design jsonb;
+
+CREATE TABLE IF NOT EXISTS outreach_campaigns (
+  id uuid PRIMARY KEY,
+  title text NOT NULL,
+  schedule text NOT NULL DEFAULT '',
+  registration_url text NOT NULL DEFAULT '',
+  version integer NOT NULL DEFAULT 0,
+  state jsonb NOT NULL DEFAULT '{"messages":[],"schoolIds":[],"draft":null,"upperGrades":false}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE school_mail_deliveries ADD COLUMN IF NOT EXISTS campaign_id uuid REFERENCES outreach_campaigns(id);
+CREATE UNIQUE INDEX IF NOT EXISTS school_mail_active_campaign_recipient_idx
+  ON school_mail_deliveries (campaign_id, institution_id)
+  WHERE campaign_id IS NOT NULL AND status IN ('sending', 'sent', 'uncertain');
+
+CREATE TABLE IF NOT EXISTS app_users (
+  username text PRIMARY KEY,
+  display_name text NOT NULL,
+  role text NOT NULL CHECK (role IN ('admin', 'employee')),
+  password_hash text NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS app_sessions (
+  token_hash text PRIMARY KEY,
+  username text NOT NULL REFERENCES app_users (username) ON DELETE CASCADE,
+  expires_at timestamptz NOT NULL,
+  last_seen_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS app_sessions_expiry_idx ON app_sessions (expires_at);
+CREATE INDEX IF NOT EXISTS app_sessions_seen_idx ON app_sessions (last_seen_at);
+
+CREATE TABLE IF NOT EXISTS app_audit_events (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  username text NOT NULL,
+  display_name text NOT NULL,
+  role text NOT NULL CHECK (role IN ('admin', 'employee')),
+  action text NOT NULL,
+  details text,
+  occurred_at timestamptz NOT NULL DEFAULT now()
+);

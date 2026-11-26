@@ -1,15 +1,11 @@
 import type { SchoolMailLayout } from "./school-mail.ts";
+import { escapeHtml } from "./school-mail-design-html.ts";
 
 const themes = {
   promotion: { accent: "#5b2999", header: "#34165c", background: "#f2eaf9", label: "ДЛЯ ВАШЕЙ ШКОЛЫ" },
   invitation: { accent: "#006b62", header: "#064840", background: "#e8f5f1", label: "ПРИГЛАШЕНИЕ" },
   newsletter: { accent: "#9d471f", header: "#613017", background: "#fbefe5", label: "НОВОСТИ И АНОНСЫ" },
 };
-
-function escapeHtml(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;").replaceAll("'", "&#39;");
-}
 
 export function renderSchoolMailHtml(layout: SchoolMailLayout, subject: string, text: string): string | undefined {
   if (layout === "plain") return;

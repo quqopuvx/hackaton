@@ -1,13 +1,17 @@
 <script setup lang="ts">
+import { apiFetch } from "../session-api";
 import { ref, watch } from "vue";
 import { isSingleEmail, schoolMailLimit } from "../../lib/school-mail";
 import type { SchoolMailHistoryEntry, SchoolMailReminder } from "../../lib/school-mail";
 
-const props = defineProps<{ active: boolean; locked: boolean }>();
+import { reminderIntervals, type ReminderInterval } from "../preferences";
+
+const props = defineProps<{ active: boolean; locked: boolean; defaultDays: ReminderInterval; excludeReplied: boolean }>();
 const emit = defineEmits<{ prepare: [ids: string[]] }>();
 const view = ref<"history" | "reminders">("history");
 const page = ref(1);
-const days = ref(7);
+const days = ref(props.defaultDays);
+watch(() => props.defaultDays, (value) => { days.value = value; });
 const reload = ref(0);
 const entries = ref<SchoolMailHistoryEntry[]>([]);
 const reminders = ref<SchoolMailReminder[]>([]);
@@ -23,15 +27,15 @@ const statuses: Record<SchoolMailHistoryEntry["status"], string> = {
   sending: "Отправляется",
 };
 
-watch([() => props.active, view, page, days, reload], async ([active, mode, number, age], _, onCleanup) => {
+watch([() => props.active, view, page, days, reload, () => props.excludeReplied], async ([active, mode, number, age, , excludeReplied], _, onCleanup) => {
   if (!active) return;
   const controller = new AbortController();
   onCleanup(() => controller.abort());
   loading.value = true;
   error.value = "";
   try {
-    const path = mode === "history" ? `history?page=${number}` : `reminders?days=${age}`;
-    const response = await fetch(`/api/school-mail/${path}`, { signal: controller.signal });
+    const path = mode === "history" ? `history?page=${number}` : `reminders?days=${age}${excludeReplied ? "" : "&includeReplied=true"}`;
+    const response = await apiFetch(`/api/school-mail/${path}`, { signal: controller.signal });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Не удалось загрузить отправки.");
     if (mode === "history") {
@@ -71,16 +75,14 @@ function prepare(): void {
       <button type="button" class="min-h-11 rounded-ui border px-3 text-sm" :aria-pressed="view === 'history'"
         :class="view === 'history' ? 'border-accent text-accent' : 'border-line'" @click="view = 'history'">Все отправки</button>
       <button type="button" class="min-h-11 rounded-ui border px-3 text-sm" :aria-pressed="view === 'reminders'"
-        :class="view === 'reminders' ? 'border-accent text-accent' : 'border-line'" @click="view = 'reminders'">Давно ждут ответа</button>
+        :class="view === 'reminders' ? 'border-accent text-accent' : 'border-line'" @click="view = 'reminders'">{{ excludeReplied ? "Давно ждут ответа" : "Кандидаты на напоминание" }}</button>
     </div>
     <div v-if="view === 'reminders'" class="mt-3 flex flex-wrap items-end justify-between gap-3">
       <label class="grid gap-1 text-sm font-medium">
         С последнего письма прошло
         <select v-model.number="days" class="min-h-11 rounded-ui border border-line bg-canvas px-3 text-sm"
           @change="selected.clear()">
-          <option :value="7">7 дней и больше</option>
-          <option :value="14">14 дней и больше</option>
-          <option :value="30">30 дней и больше</option>
+          <option v-for="interval in reminderIntervals" :key="interval" :value="interval">{{ interval }} дней и больше</option>
         </select>
       </label>
       <button type="button" :disabled="locked || loading || !!error || !selected.size"

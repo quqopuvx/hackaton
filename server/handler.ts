@@ -6,8 +6,14 @@ import { readSchoolReplies } from "./school-replies.ts";
 import { isSchoolMailLayout, isSingleEmail, schoolMailDefaultLayout, schoolMailDraft, schoolMailLimit, schoolMailSubjectLimit, schoolMailTemplates, schoolMailTextLimit, type SchoolMailLayout, type SchoolMailRecipient, type SchoolMailTemplate } from "../lib/school-mail.ts";
 import { refreshInstitution, runAgent } from "../lib/ai/agent.ts";
 import { institutionTypeLabels, type InstitutionType } from "../lib/institution-types.ts";
-import { findSchoolMailTemplate, listInstitutions, listSchoolMailHistory, listSchoolMailReminders, listSchoolMailTemplates, normalize, saveSchoolMailTemplate, updateInstitution } from "../lib/store.ts";
+import { createCampaign, deleteCampaign, deleteSchoolMailTemplate, findCampaign, findInstitution, findSchoolMailTemplate, hasSchoolMailRequest, listCampaigns, listInstitutions, listSchoolMailHistory, listSchoolMailReminders, listSchoolMailTemplates, normalize, readCampaignView, saveCampaignTurn, saveSchoolMailTemplate, updateCampaignDetails, updateInstitution } from "../lib/store.ts";
+import { campaignMessageLimit } from "../lib/campaigns.ts";
+import { planCampaignTurn, recordCampaignExchange } from "./campaign-agent.ts";
+import { addCampaignSchool } from "./campaign-schools.ts";
 import type { InstitutionEdits, SearchEvent } from "../lib/types.ts";
+import type { Account } from "../lib/accounts.ts";
+import { isSchoolMailDesign, mailDesignRequestLimit, mailDesignText, type SchoolMailDesign } from "../lib/school-mail-design.ts";
+import { allowsRequestOrigin, readAudit, readSession, recordAudit, setSessionCookie, signIn, signOut } from "./accounts.ts";
 
 class InputError extends Error {}
 
@@ -106,6 +112,39 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+async function handleAuth(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<void> {
+  if (pathname === "/api/auth/session" && req.method === "GET") {
+    const user = await readSession(req);
+    send(res, 200, { user });
+    return;
+  }
+  if ((pathname !== "/api/auth/login" && pathname !== "/api/auth/logout") || req.method !== "POST") {
+    send(res, 405, { error: "Метод не поддерживается." });
+    return;
+  }
+  if (req.headers["content-type"]?.split(";")[0].trim().toLowerCase() !== "application/json") {
+    throw new InputError("Ожидается application/json.");
+  }
+  if (pathname === "/api/auth/logout") {
+    await signOut(req);
+    setSessionCookie(req, res);
+    send(res, 200, {});
+    return;
+  }
+  const { username, password } = await readBody(req, 4096);
+  if (typeof username !== "string" || !/^[a-z0-9._-]{1,48}$/i.test(username.trim()) ||
+      typeof password !== "string" || password.length === 0 || password.length > 256) {
+    throw new InputError("Укажите логин и пароль.");
+  }
+  const result = await signIn(req, username.trim().toLowerCase(), password);
+  if (result === "denied") send(res, 401, { error: "Неверный логин или пароль." });
+  else if (result === "throttled") send(res, 429, { error: "Слишком много попыток. Повторите вход через несколько минут." });
+  else {
+    setSessionCookie(req, res, result.token);
+    send(res, 200, { user: result.user });
+  }
+}
+
 const uuidPattern = /^[a-f\d]{8}-[a-f\d]{4}-4[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i;
 
 function isMailLine(value: unknown, limit: number): value is string {
@@ -116,32 +155,63 @@ function isMailText(value: unknown): value is string {
   return typeof value === "string" && !!value.trim() && value.length <= schoolMailTextLimit && !value.includes("\0");
 }
 
-async function handleMailTemplates(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  if (req.method === "GET") {
-    send(res, 200, { templates: await listSchoolMailTemplates() });
+function readMailDesign(value: unknown): SchoolMailDesign | null | undefined {
+  if (value === null || value === undefined) return value;
+  if (!isSchoolMailDesign(value)) throw new InputError("Проверьте оформление и изображения в конструкторе.");
+  return value;
+}
+
+function checkDesignText(design: SchoolMailDesign | null | undefined, text: string, signature?: string): void {
+  if (design && mailDesignText(design, text, signature).length > schoolMailTextLimit) {
+    throw new InputError(`Общий текст письма должен содержать не более ${schoolMailTextLimit} символов.`);
+  }
+}
+
+async function handleMailTemplates(req: IncomingMessage, res: ServerResponse, user: Account, templateId?: string): Promise<void> {
+  if (req.method === "DELETE" && templateId) {
+    if (!(await deleteSchoolMailTemplate(templateId))) {
+      send(res, 404, { error: "Шаблон не найден." });
+      return;
+    }
+    await recordAudit(user, "template_delete", templateId);
+    send(res, 200, { deleted: true });
     return;
   }
-  if (req.method !== "POST") {
+  if (req.method === "GET") {
+    if (templateId) {
+      const template = await findSchoolMailTemplate(templateId);
+      if (template) send(res, 200, { template });
+      else send(res, 404, { error: "Шаблон не найден." });
+    } else send(res, 200, { templates: await listSchoolMailTemplates() });
+    return;
+  }
+  if (req.method !== "POST" || templateId) {
     send(res, 405, { error: "Метод не поддерживается." });
     return;
   }
   if (req.headers["content-type"]?.split(";")[0].trim().toLowerCase() !== "application/json") {
     throw new InputError("Ожидается application/json.");
   }
-  const { id, name, subject, text, layout } = await readBody(req, 24 * 1024);
+  const { id, name, subject, text, layout, design: rawDesign } = await readBody(req, mailDesignRequestLimit);
   if (id !== undefined && (typeof id !== "string" || !uuidPattern.test(id))) throw new InputError("Некорректный шаблон.");
   if (!isMailLine(name, 100) || !isMailLine(subject, schoolMailSubjectLimit) || !isMailText(text)) {
     throw new InputError("Заполните название, тему и текст шаблона.");
   }
   if (layout !== undefined && !isSchoolMailLayout(layout)) throw new InputError("Выберите оформление письма.");
+  const design = readMailDesign(rawDesign);
+  checkDesignText(design, text);
   const template = await saveSchoolMailTemplate({
-    id: id ?? randomUUID(), name: name.trim(), subject: subject.trim(), text: text.trim(), layout,
+    id: id ?? randomUUID(), name: name.trim(), subject: subject.trim(), text: text.trim(), layout, design,
   }, id !== undefined);
-  if (template) send(res, id === undefined ? 201 : 200, { template });
-  else send(res, 404, { error: "Шаблон не найден." });
+  if (!template) {
+    send(res, 404, { error: "Шаблон не найден." });
+    return;
+  }
+  await recordAudit(user, id === undefined ? "template_create" : "template_edit", template.id);
+  send(res, id === undefined ? 201 : 200, { template });
 }
 
-async function handleSchoolMail(req: IncomingMessage, res: ServerResponse, replies = false): Promise<void> {
+async function handleSchoolMail(req: IncomingMessage, res: ServerResponse, user: Account, replies = false): Promise<void> {
   if (req.method !== "POST") {
     send(res, 405, { error: "Метод не поддерживается." });
     return;
@@ -150,15 +220,11 @@ async function handleSchoolMail(req: IncomingMessage, res: ServerResponse, repli
     throw new InputError("Ожидается application/json.");
   }
   if (replies) {
-    const fetchSite = req.headers["sec-fetch-site"];
-    if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
-      send(res, 403, { error: "Откройте вкладку ответов на странице приложения." });
-      return;
-    }
     send(res, 200, { replies: await readSchoolReplies() });
     return;
   }
-  const { requestId, template, recipients, accessCode, text, subject, layout } = await readBody(req, 32 * 1024);
+  const { requestId, template, recipients, accessCode, text, subject, layout, campaignId, replyTo, design: rawDesign, signature } =
+    await readBody(req, mailDesignRequestLimit);
   const access = authorizeSchoolMail(typeof accessCode === "string" ? accessCode : "");
   if (access === "unconfigured") {
     send(res, 503, { error: "Почта ещё не настроена. Обратитесь к администратору." });
@@ -174,33 +240,137 @@ async function handleSchoolMail(req: IncomingMessage, res: ServerResponse, repli
   if (typeof requestId !== "string" || !uuidPattern.test(requestId) ||
       typeof template !== "string" || (!Object.hasOwn(schoolMailTemplates, template) && !uuidPattern.test(template)) ||
       !Array.isArray(recipients) || recipients.length === 0 || recipients.length > schoolMailLimit) {
-    throw new InputError(`Выберите шаблон и от 1 до ${schoolMailLimit} школ.`);
+    throw new InputError(`Выберите шаблон и от 1 до ${schoolMailLimit} получателей.`);
   }
   const selected = new Map<string, SchoolMailRecipient>();
   for (const recipient of recipients) {
     const { id, email } = recipient ?? {};
     if (typeof id !== "string" || !/^[1-9][0-9]{0,18}$/.test(id) || BigInt(id) > 9223372036854775807n ||
         typeof email !== "string" || !isSingleEmail(email) || selected.has(id)) {
-      throw new InputError("Проверьте список школ и их почтовые адреса.");
+      throw new InputError("Проверьте список получателей и их почтовые адреса.");
     }
     selected.set(id, { id, email });
   }
+  let campaign: string | null = null;
+  if (campaignId !== undefined) {
+    if (typeof campaignId !== "string" || !uuidPattern.test(campaignId)) throw new InputError("Некорректная кампания.");
+    const current = await findCampaign(campaignId);
+    if (!current) throw new InputError("Кампания не найдена.");
+    const allowed = new Set(current.state.schoolIds);
+    if ([...selected.keys()].some((id) => !allowed.has(id))) {
+      throw new InputError("Подборка кампании изменилась. Откройте предпросмотр заново.");
+    }
+    campaign = current.id;
+  }
   if (layout !== undefined && !isSchoolMailLayout(layout)) throw new InputError("Выберите оформление письма.");
   if (subject !== undefined && !isMailLine(subject, schoolMailSubjectLimit)) throw new InputError("Некорректная тема письма.");
-  let message: { subject: string; text: string; layout: SchoolMailLayout };
+  if (replyTo !== undefined && (typeof replyTo !== "string" || !isSingleEmail(replyTo))) {
+    throw new InputError("Укажите один действительный адрес для ответов.");
+  }
+  const design = readMailDesign(rawDesign);
+  if (signature !== undefined && (typeof signature !== "string" || signature.length > schoolMailTextLimit || signature.includes("\0"))) {
+    throw new InputError("Проверьте подпись письма.");
+  }
+  let message: { subject: string; text: string; layout: SchoolMailLayout; replyTo?: string; design?: SchoolMailDesign | null; signature?: string };
   if (Object.hasOwn(schoolMailTemplates, template)) {
     const builtin = template as SchoolMailTemplate;
     message = { subject: subject?.trim() ?? schoolMailTemplates[builtin], text: text ?? schoolMailDraft(builtin),
       layout: layout ?? schoolMailDefaultLayout(builtin) };
   } else {
     const saved = await findSchoolMailTemplate(template);
-    if (!saved) throw new InputError("Выбранный шаблон не найден.");
-    message = { subject: subject?.trim() ?? saved.subject, text: text ?? saved.text, layout: layout ?? saved.layout };
+    if (saved) {
+      message = { subject: subject?.trim() ?? saved.subject, text: text ?? saved.text,
+        layout: layout ?? saved.layout, design: design === undefined ? saved.design : design, signature };
+    } else {
+      // A retry can use its original payload after the saved template was deleted.
+      if (typeof subject !== "string" || typeof text !== "string" || layout === undefined ||
+          design === undefined || !(await hasSchoolMailRequest(requestId, template))) {
+        throw new InputError("Выбранный шаблон не найден.");
+      }
+      message = { subject: subject.trim(), text, layout, design, signature };
+    }
   }
-  send(res, 200, { outcomes: await sendSchoolMail(requestId, template, [...selected.values()], message) });
+  checkDesignText(message.design, message.text, message.signature);
+  message.replyTo = replyTo;
+  const outcomes = await sendSchoolMail(requestId, template, [...selected.values()], message, campaign);
+  await recordAudit(user, "mail_send", "Получателей: " + selected.size + ". Запрос: " + requestId);
+  send(res, 200, { outcomes });
 }
 
-async function streamSearch(query: string, res: ServerResponse): Promise<void> {
+async function handleCampaign(req: IncomingMessage, res: ServerResponse, user: Account, id?: string): Promise<void> {
+  const method = req.method;
+  if (method === "GET" && !id) {
+    send(res, 200, { campaigns: await listCampaigns() });
+    return;
+  }
+  if (method !== "GET" && method !== "POST" && !((method === "PATCH" || method === "DELETE") && id)) {
+    send(res, 405, { error: "Метод не поддерживается." });
+    return;
+  }
+  const current = id ? await findCampaign(id) : undefined;
+  if (id && !current) {
+    send(res, 404, { error: "Кампания не найдена." });
+    return;
+  }
+  if (method === "GET" && current) {
+    send(res, 200, await readCampaignView(current));
+    return;
+  }
+  if (req.headers["content-type"]?.split(";")[0].trim().toLowerCase() !== "application/json") {
+    throw new InputError("Ожидается application/json.");
+  }
+  const { title, schedule, registrationUrl, version, message, schoolId } = await readBody(req, 16 * 1024);
+  if (!current) {
+    if (!isMailLine(title, 120)) throw new InputError("Введите название кампании длиной до 120 символов.");
+    const campaign = await createCampaign(randomUUID(), title.trim());
+    await recordAudit(user, "campaign_create", campaign.id);
+    send(res, 201, await readCampaignView(campaign));
+    return;
+  }
+  if (version !== current.version) {
+    send(res, 409, { error: "Кампания изменилась. Обновите её и повторите действие." });
+    return;
+  }
+  if (method === "DELETE") {
+    if (await deleteCampaign(current.id, current.version)) {
+      await recordAudit(user, "campaign_delete", current.id);
+      send(res, 200, { deleted: true });
+    }
+    else send(res, 409, { error: "Кампания изменилась. Обновите её и повторите действие." });
+    return;
+  }
+  let next;
+  if (method === "PATCH") {
+    if (!isMailLine(title, 120) || !(schedule === "" || isMailLine(schedule, 160)) ||
+        typeof registrationUrl !== "string" || registrationUrl.length > 1000 ||
+        /[\s\0]/.test(registrationUrl) || (registrationUrl !== "" && !isSourceUrl(registrationUrl))) {
+      throw new InputError("Проверьте название, дату и ссылку на регистрацию (http:// или https://).");
+    }
+    next = await updateCampaignDetails(current.id, current.version, { title: title.trim(), schedule: schedule.trim(), registrationUrl });
+  } else if (schoolId !== undefined) {
+    if (typeof schoolId !== "string" || !current.state.schoolChoiceIds?.includes(schoolId)) {
+      throw new InputError("Выберите школу из последнего уточнения в чате.");
+    }
+    const school = await findInstitution(schoolId);
+    if (school?.institutionType !== "school") throw new InputError("Карточка школы изменилась. Повторите запрос в чате.");
+    const state = { ...current.state };
+    const reply = addCampaignSchool(state, school);
+    next = await saveCampaignTurn(current.id, current.version,
+      recordCampaignExchange(state, `Выбираю «${school.name}» (${school.city}).`, reply));
+  } else {
+    if (typeof message !== "string" || !message.trim() || message.length > campaignMessageLimit || message.includes("\0")) {
+      throw new InputError(`Введите сообщение длиной до ${campaignMessageLimit} символов.`);
+    }
+    next = await saveCampaignTurn(current.id, current.version, await planCampaignTurn(current, message.trim()));
+  }
+  if (next) {
+    await recordAudit(user, method === "PATCH" ? "campaign_edit" : schoolId !== undefined ? "campaign_school" : "campaign_message", next.id);
+    send(res, 200, await readCampaignView(next));
+  }
+  else send(res, 409, { error: "Кампания изменилась. Обновите её и повторите действие." });
+}
+
+async function streamSearch(query: string, res: ServerResponse, user: Account): Promise<void> {
   res.writeHead(200, {
     "Content-Type": "application/x-ndjson; charset=utf-8",
     "Cache-Control": "no-store, no-transform",
@@ -216,6 +386,7 @@ async function streamSearch(query: string, res: ServerResponse): Promise<void> {
   try {
     const result = await runAgent(query, (institution, checkingContacts) =>
       emit({ type: "institution", institution, checkingContacts }));
+    await recordAudit(user, "search", "Найдено: " + result.institutions.length);
     emit({ type: "complete", result });
   } catch (error) {
     const databaseError = error instanceof DatabaseError;
@@ -237,10 +408,33 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
   if (!pathname.startsWith("/api/")) return false;
   const institutionRoute = /^\/api\/institutions\/([1-9][0-9]{0,18})$/.exec(pathname);
   const refreshRoute = /^\/api\/institutions\/([1-9][0-9]{0,18})\/refresh$/.exec(pathname);
+  const campaignRoute = /^\/api\/campaigns\/([^/]+)$/.exec(pathname);
+  const templateRoute = /^\/api\/school-mail\/templates\/([^/]+)$/.exec(pathname);
 
   try {
-    if (pathname === "/api/school-mail/templates") {
-      await handleMailTemplates(req, res);
+    if (!allowsRequestOrigin(req)) {
+      send(res, 403, { error: "Откройте приложение и повторите действие." });
+      return true;
+    }
+    if (pathname.startsWith("/api/auth/")) {
+      await handleAuth(req, res, pathname);
+      return true;
+    }
+    const user = await readSession(req);
+    if (!user) {
+      send(res, 401, { error: "Войдите в аккаунт." });
+      return true;
+    }
+    if (pathname === "/api/audit") {
+      if (user.role !== "admin") send(res, 403, { error: "Журнал доступен администратору." });
+      else if (req.method !== "GET") send(res, 405, { error: "Метод не поддерживается." });
+      else send(res, 200, { events: await readAudit() });
+      return true;
+    }
+    if (pathname === "/api/campaigns" || (campaignRoute && uuidPattern.test(campaignRoute[1]))) {
+      await handleCampaign(req, res, user, campaignRoute?.[1]);
+    } else if (pathname === "/api/school-mail/templates" || (templateRoute && uuidPattern.test(templateRoute[1]))) {
+      await handleMailTemplates(req, res, user, templateRoute?.[1]);
     } else if (pathname === "/api/school-mail/history" || pathname === "/api/school-mail/reminders") {
       if (req.method !== "GET") send(res, 405, { error: "Метод не поддерживается." });
       else if (pathname.endsWith("/history")) {
@@ -250,24 +444,28 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       } else {
         const days = Number(url.searchParams.get("days") ?? "7");
         if (![7, 14, 30].includes(days)) throw new InputError("Выберите срок 7, 14 или 30 дней.");
-        let schools = await listSchoolMailReminders(days);
-        if (schools.length) {
+        const includeReplied = url.searchParams.get("includeReplied") === "true";
+        let schools = await listSchoolMailReminders(days, includeReplied);
+        if (schools.length && !includeReplied) {
           await readSchoolReplies();
           schools = await listSchoolMailReminders(days);
         }
         send(res, 200, { schools });
       }
     } else if (pathname === "/api/school-mail/replies") {
-      await handleSchoolMail(req, res, true);
+      await handleSchoolMail(req, res, user, true);
     } else if (pathname === "/api/school-mail") {
-      await handleSchoolMail(req, res);
+      await handleSchoolMail(req, res, user);
     } else if (pathname === "/api/institutions" && req.method === "GET") {
       send(res, 200, { institutions: await listInstitutions() });
     } else if (institutionRoute && req.method === "PATCH") {
       const id = institutionRoute[1];
       const edits = await readInstitutionEdits(req);
       const institution = BigInt(id) <= 9223372036854775807n ? await updateInstitution(id, edits) : undefined;
-      if (institution) send(res, 200, { institution });
+      if (institution) {
+        await recordAudit(user, "institution_edit", "Учреждение № " + id);
+        send(res, 200, { institution });
+      }
       else send(res, 404, { error: "Учреждение не найдено." });
     } else if (refreshRoute && req.method === "POST") {
       const id = refreshRoute[1];
@@ -275,14 +473,19 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (result === "conflict") {
         send(res, 409, { error: "Название или местоположение изменились во время поиска. Запустите обновление ещё раз." });
       } else if (result) {
+        await recordAudit(user, "institution_refresh", "Учреждение № " + id);
         send(res, 200, result);
       } else {
         send(res, 404, { error: "Учреждение не найдено." });
       }
     } else if (pathname === "/api/agent" && req.method === "POST") {
       const query = await readQuery(req);
-      if (req.headers.accept?.includes("application/x-ndjson")) await streamSearch(query, res);
-      else send(res, 200, await runAgent(query));
+      if (req.headers.accept?.includes("application/x-ndjson")) await streamSearch(query, res, user);
+      else {
+        const result = await runAgent(query);
+        await recordAudit(user, "search", "Найдено: " + result.institutions.length);
+        send(res, 200, result);
+      }
     } else if (pathname === "/api/institutions" || pathname === "/api/agent" || institutionRoute || refreshRoute) {
       send(res, 405, { error: "Метод не поддерживается." });
     } else {

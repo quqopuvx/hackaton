@@ -1,10 +1,11 @@
+import { load } from "cheerio/slim";
 import type { InstitutionDetails, InstitutionRefreshResult, SearchResult } from "../types.ts";
 import { applyInstitutionRefresh, findInstitution, findSavedSearch, normalize, saveSearch } from "../store.ts";
 import { extractWithGigaChat } from "./gigachat.ts";
 import { readInstitutionCompletion } from "./stream-institutions.ts";
 import { institutionTypeLabels, readInstitutionType } from "../institution-types.ts";
 import { isDirectorySource } from "../institution-sources.ts";
-import { readInstitutionSiteEmail } from "./official-email.ts";
+import { readInstitutionSiteEmail, readPublicHtml } from "./official-email.ts";
 import { readOfficialSchoolEnrollment } from "./school-enrollment.ts";
 import { SearchDeadlineError, withSearchDeadline } from "./deadline.ts";
 import { isYakutskSchoolList, numberedSchool, schoolsFromYakutskPortal } from "./official-school-discovery.ts";
@@ -127,6 +128,34 @@ interface SourceExcerpt {
   catalogText?: string;
 }
 
+async function completeTatarSchoolExcerpt(source: SourceExcerpt): Promise<void> {
+  const url = new URL(source.url);
+  if (source.pageIntro || url.hostname !== "edu.tatar.ru") return;
+  const html = await readPublicHtml(url, true);
+  if (!html) return;
+  const $ = load(html);
+  const name = field($("#content > h2").first().text());
+  const card = $("#content .contacts").filter((_, block) => $(block).find("h2").text().trim() === "Визитная карточка").first();
+  if (!name || !card.length) return;
+
+  const rows = new Map<string, string>();
+  for (const row of card.find("tr").get()) {
+    const cells = $(row).children("td");
+    const label = field(cells.eq(0).text());
+    const value = field(cells.eq(1).text());
+    if (label && value) rows.set(label, value);
+  }
+  const address = rows.get("Адрес:");
+  if (!address) return;
+  source.pageIntro = [name, rows.get("Короткое название:"), `Адрес: ${address}`].filter(Boolean).join("\n");
+  const leader = rows.get("Руководитель:");
+  if (leader) source.leadershipText = `Руководитель: ${leader}`;
+  source.contactText = ["Телефон:", "E-Mail:"].flatMap((label) => {
+    const value = rows.get(label);
+    return value ? [`${label} ${value}`] : [];
+  }).join("\n") || source.contactText;
+}
+
 function sourceHost(url: string): string {
   return new URL(url).hostname.replace(/^www\./, "");
 }
@@ -217,9 +246,13 @@ function phoneDigits(phone: string): string {
   return digits + (extension ? `-${extension.replace(/\D/g, "")}` : "");
 }
 
+export function parseModelJson(raw: string): unknown {
+  return JSON.parse(raw.trim().replace(/^```(?:json)?\s*|\s*```$/gi, ""));
+}
+
 function readInstitutions(raw: string): unknown[] | null {
   try {
-    const parsed: unknown = JSON.parse(raw.trim().replace(/^```(?:json)?\s*|\s*```$/gi, ""));
+    const parsed = parseModelJson(raw);
     const rows = parsed && typeof parsed === "object" && "institutions" in parsed ? parsed.institutions : parsed;
     return Array.isArray(rows) ? rows : null;
   } catch {
@@ -244,9 +277,7 @@ async function rateLimitError(response: Response, provider: string): Promise<Err
     : "Повторите позже."}`);
 }
 
-async function searchWeb(query: string, onInstitution?: OnInstitution, target?: InstitutionTarget): Promise<Discovery> {
-  const provider = process.env.SEARCH_PROVIDER || "openai";
-  if (provider === "cheapvibecode" || provider === "gigachat") return searchWithTavily(query, provider, onInstitution, target);
+function webModelConfig(provider: string) {
   if (provider !== "openai" && provider !== "openrouter") {
     throw new Error("Для SEARCH_PROVIDER укажите cheapvibecode, gigachat, openai или openrouter.");
   }
@@ -257,18 +288,25 @@ async function searchWeb(query: string, onInstitution?: OnInstitution, target?: 
     (router && legacyRouter && process.env.OPENAI_API_KEY?.startsWith("sk-or-")
       ? process.env.OPENAI_API_KEY
       : undefined);
-  if (!key) throw new Error(`Укажите ${keyName} в .env.local для поиска в интернете.`);
+  if (!key) throw new Error(`Укажите ${keyName} в .env.local.`);
   if (!router && key.startsWith("sk-or-")) {
     throw new Error("Для ключа OpenRouter укажите SEARCH_PROVIDER=openrouter и SEARCH_OPENROUTER_API_KEY.");
   }
   const model = router
     ? process.env.SEARCH_OPENROUTER_MODEL || "nvidia/nemotron-3.5-super-vl:free"
     : process.env.SEARCH_OPENAI_MODEL || "gpt-5.4-mini";
-  const endpoint = router ? "https://openrouter.ai/api/v1/responses" : "https://api.openai.com/v1/responses";
+  const base = router ? "https://openrouter.ai/api/v1" : "https://api.openai.com/v1";
+  return { router, keyName, key, model, base };
+}
+
+async function searchWeb(query: string, onInstitution?: OnInstitution, target?: InstitutionTarget): Promise<Discovery> {
+  const provider = process.env.SEARCH_PROVIDER || "openai";
+  if (provider === "cheapvibecode" || provider === "gigachat") return searchWithTavily(query, provider, onInstitution, target);
+  const { router, keyName, key, model, base } = webModelConfig(provider);
 
   let response: Response;
   try {
-    response = await fetch(endpoint, {
+    response = await fetch(`${base}/responses`, {
       method: "POST",
       signal: AbortSignal.timeout(110_000),
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
@@ -370,10 +408,11 @@ async function extractWithCheapVibeCode(
   timeoutSeconds = cheapVibeTimeoutSeconds,
   parentSignal?: AbortSignal,
 ): Promise<string> {
+  const fields = Object.keys(properties).join(", ");
   return withSearchDeadline(
     timeoutSeconds * 1000,
     `CheapVibeCode не завершил обработку результатов за ${timeoutSeconds} секунд.`,
-    (signal) => requestCheapVibeCode(instructions, input, onRecord, maxTokens,
+    (signal) => requestCheapVibeCode(`${instructions}\nПоля каждой записи: ${fields}. Верни только JSON.`, input, onRecord, maxTokens,
       parentSignal ? AbortSignal.any([parentSignal, signal]) : signal),
   );
 }
@@ -384,7 +423,7 @@ async function requestCheapVibeCode(
 ): Promise<string> {
   const key = process.env.CHEAPVIBECODE_API_KEY;
   if (!key) throw new Error("Добавьте CHEAPVIBECODE_API_KEY в .env.local.");
-  const fields = Object.keys(properties).join(", ");
+  const model = process.env.CHEAPVIBECODE_MODEL || "qwen3.8-flash";
   let response: Response;
   try {
     response = await fetch("https://ru.cheapvibecode.ru/v1/chat/completions", {
@@ -393,9 +432,10 @@ async function requestCheapVibeCode(
       signal,
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: process.env.CHEAPVIBECODE_MODEL || "qwen3.8-flash",
+        model,
+        ...(model === "qwen3.8-flash" ? { reasoning_effort: "none" } : {}),
         messages: [
-          { role: "system", content: `${instructions}\nПоля каждой записи: ${fields}. Верни только JSON.` },
+          { role: "system", content: instructions },
           { role: "user", content: input },
         ],
         response_format: { type: "json_object" },
@@ -439,6 +479,32 @@ async function requestCheapVibeCode(
   if (choice?.finish_reason !== "stop" || typeof raw !== "string" || !raw.trim()) {
     throw new Error("CheapVibeCode не вернул полный ответ с результатами.");
   }
+  return raw;
+}
+
+export async function completeCampaignTurn(instructions: string, input: string, schema: object): Promise<string> {
+  const provider = process.env.SEARCH_PROVIDER || "openai";
+  const signal = AbortSignal.timeout(60_000);
+  if (provider === "gigachat") return extractWithGigaChat(instructions, input, schema);
+  if (provider === "cheapvibecode") return requestCheapVibeCode(instructions, input, undefined, 1800, signal);
+
+  const { key, model, base, router } = webModelConfig(provider);
+  const response = await fetch(`${base}/responses`, {
+    method: "POST",
+    redirect: "error",
+    signal,
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model, instructions, input, max_output_tokens: 2200, store: false,
+      ...(router ? { provider: { require_parameters: true } } : { reasoning: { effort: "low" } }),
+      text: { format: { type: "json_schema", name: "campaign_turn", strict: true, schema } },
+    }),
+  }).catch(() => { throw new Error("Модель кампаний недоступна или не успела ответить."); });
+  if (!response.ok) throw new Error(`Модель кампаний вернула HTTP ${response.status}.`);
+  const result = (await response.json()) as WebResponse;
+  const content = result.output?.filter((item) => item.type === "message").flatMap((item) => item.content ?? []);
+  const raw = content?.find((item) => item.type === "output_text")?.text;
+  if (result.status !== "completed" || !raw) throw new Error("Модель кампаний вернула неполный ответ.");
   return raw;
 }
 
@@ -637,6 +703,7 @@ async function searchWithTavily(
   const sources = [...uniqueSources.values()].filter((source) => !isContactAggregator(sourceHost(source.url))).sort((a, b) =>
     Number(isDirectorySource(a.url, a.title)) - Number(isDirectorySource(b.url, b.title)),
   );
+  if (schoolSearch) await Promise.all(sources.map(completeTatarSchoolExcerpt));
 
   const extractionInstructions = `${instructions}
 Веб-поиск уже выполнен. Используй только переданные источники и их выдержки.
@@ -680,14 +747,17 @@ async function searchWithTavily(
 
   if (yakutskList) schoolsFromYakutskPortal(sources).forEach(register);
 
-  async function processBatch(batch: typeof sources, timeoutSeconds = cheapVibeTimeoutSeconds): Promise<void> {
+  async function processBatch(
+    batch: typeof sources, extractionProvider = provider, timeoutSeconds = cheapVibeTimeoutSeconds,
+  ): Promise<void> {
     const knownUrls = new Set(batch.map((source) => source.url));
     try {
       const indexedSources = new Map(batch.map((source, index) => [`S${index + 1}`, source]));
-      const inputSources = provider === "cheapvibecode"
+      const inputSources = extractionProvider === "cheapvibecode"
         ? [...indexedSources].map(([id, source]) => ({
           id, site: sourceHost(source.url), title: source.title, excerpt: source.excerpt,
           pageIntro: source.pageIntro?.slice(0, 800), contactText: source.contactText.slice(0, 320),
+          leadershipText: source.leadershipText.slice(0, 250),
         }))
         : batch;
       const input = JSON.stringify({ query, sources: inputSources });
@@ -705,7 +775,7 @@ async function searchWithTavily(
           phoneSourceUrl: lookup(value.phoneSourceUrl)?.url ?? null,
         };
       };
-      const raw = provider === "cheapvibecode"
+      const raw = extractionProvider === "cheapvibecode"
         ? await extractWithCheapVibeCode(
           `${extractionInstructions}\nВ полях sourceUrl, leaderSourceUrl, emailSourceUrl и phoneSourceUrl используй только ID из поля id, например "S1". Полные URL не выводи. Название учреждения скопируй из выдержки. Верни максимум три учреждения.`,
           input,
@@ -715,7 +785,7 @@ async function searchWithTavily(
         : await extractWithGigaChat(`${extractionInstructions}\nКопируй адреса источников из поля url без изменений.`, input, resultFormat.schema);
       const institutions = readInstitutions(raw);
       if (!institutions) throw new Error("Модель вернула учреждения в неподдерживаемом формате.");
-      const records = provider === "cheapvibecode" ? institutions.map(decodeSourceReferences) : institutions;
+      const records = extractionProvider === "cheapvibecode" ? institutions.map(decodeSourceReferences) : institutions;
       validateInstitutions(records, knownUrls, false, batch).forEach(register);
     } catch (error) {
       failures.push(error);
@@ -731,7 +801,8 @@ async function searchWithTavily(
     );
     await Promise.all(batches.map((batch) => processBatch(batch)));
     if (provider === "cheapvibecode" && !candidates.size && failures.some((error) => error instanceof SearchDeadlineError)) {
-      await processBatch(batches[0].slice(0, 2), 12);
+      if (process.env.GIGACHAT_AUTH_KEY) await processBatch(batches[0], "gigachat");
+      else await processBatch(batches[0].slice(0, 2), provider, 12);
     }
   }
   if (!candidates.size && failures.length) throw failures[0];

@@ -178,6 +178,7 @@ function accessibleName(code: string): string {
 <style scoped>
 .map-region, .map-city {
   cursor: pointer;
+  outline: none;
   stroke: #fff;
   stroke-width: 0.65;
   vector-effect: non-scaling-stroke;
@@ -190,9 +191,12 @@ function accessibleName(code: string): string {
 
 .region-hover, .map-region:focus-visible, .map-city:focus-visible {
   filter: brightness(0.86);
-  outline: none;
   stroke: var(--color-accent);
   stroke-width: 1.8;
+}
+
+.map-region:focus-visible, .map-city:focus-visible {
+  stroke-width: 2.75;
 }
 
 .map-control {

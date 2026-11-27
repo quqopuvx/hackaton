@@ -25,8 +25,14 @@ function applicantMailOrigin(): string | undefined {
   }
 }
 
-export function applicantMailSetupError(): string | undefined {
-  if (!applicantMailOrigin() || !mailConfigured()) return "Отправка писем недоступна.";
+function isApplicantUnsubscribeDemo(): boolean {
+  return process.env.APPLICANT_MAIL_MODE !== "smtp";
+}
+
+export function applicantMailSetupError(automatic = false): string | undefined {
+  if (!mailConfigured() || (isApplicantUnsubscribeDemo() ? automatic : !applicantMailOrigin())) {
+    return "Отправка писем недоступна.";
+  }
 }
 
 export function getApplicantMailSettings(): ApplicantMailSettings {
@@ -44,18 +50,20 @@ export function saveApplicantMailSettings(settings: ApplicantMailSettings): void
 }
 
 export async function sendApplicantMail(requestId: string, applicantId: string, message: Message): Promise<DeliveryStatus> {
-  const origin = applicantMailOrigin();
-  if (!origin) throw new Error("Адрес для отписки ещё не настроен.");
+  const demo = isApplicantUnsubscribeDemo();
+  const origin = demo ? undefined : applicantMailOrigin();
+  if (!demo && !origin) throw new Error("Отправка писем недоступна.");
   const database = olympiadDatabase();
   const getDelivery = () => database.prepare("SELECT status FROM applicant_mail_deliveries WHERE request_id = ? AND applicant_id = ?")
     .get(requestId, applicantId) as { status: DeliveryStatus } | undefined;
   const existing = getDelivery();
   if (existing) return existing.status;
-  const applicant = database.prepare(`UPDATE olympiad_registrations
-    SET unsubscribe_token = COALESCE(unsubscribe_token, ?) WHERE id = ? AND ${eligible}
-    RETURNING name, email, unsubscribe_token AS token`,
-  ).get(randomBytes(32).toString("base64url"), applicantId, olympiad.consentVersion) as
-    { name: string; email: string; token: string } | undefined;
+  const applicant = (origin
+    ? database.prepare(`UPDATE olympiad_registrations
+        SET unsubscribe_token = COALESCE(unsubscribe_token, ?) WHERE id = ? AND ${eligible}
+        RETURNING name, email, unsubscribe_token AS token`).get(randomBytes(32).toString("base64url"), applicantId, olympiad.consentVersion)
+    : database.prepare(`SELECT name, email FROM olympiad_registrations WHERE id = ? AND ${eligible}`)
+      .get(applicantId, olympiad.consentVersion)) as { name: string; email: string; token?: string } | undefined;
   if (!applicant) return "skipped";
 
   const { from, transport } = createMailTransport();
@@ -66,7 +74,11 @@ export async function sendApplicantMail(requestId: string, applicantId: string, 
     ).run(requestId, applicantId, olympiad.consentVersion);
     if (!claimed.changes) return getDelivery()?.status ?? "skipped";
 
-    const unsubscribe = new URL(unsubscribePrefix + applicant.token, origin).href;
+    const unsubscribe = origin && applicant.token ? new URL(unsubscribePrefix + applicant.token, origin).href : undefined;
+    const buttonStyle = "display:inline-block;padding:10px 16px;background:#5d3d65;border-radius:24px;color:#fff;text-decoration:none";
+    const button = unsubscribe
+      ? `<a style="${buttonStyle}" href="${escapeHtml(unsubscribe)}">${applicantUnsubscribeLabel}</a>`
+      : `<span style="${buttonStyle}">${applicantUnsubscribeLabel}</span>`;
     const text = message.text.replaceAll("{{имя}}", () => applicant.name);
     let status: DeliveryStatus;
     try {
@@ -74,11 +86,9 @@ export async function sendApplicantMail(requestId: string, applicantId: string, 
         from,
         to: { name: applicant.name, address: applicant.email },
         subject: message.subject,
-        text: `${text}\n\n${applicantUnsubscribeLabel}: ${unsubscribe}`,
-        html: `<div style="font-family:Arial,sans-serif;line-height:1.6"><p>${escapeHtml(text).replace(/\r\n?|\n/g, "<br>")}</p>
-          <p><a style="display:inline-block;padding:10px 16px;background:#5d3d65;border-radius:24px;color:#fff;text-decoration:none"
-            href="${escapeHtml(unsubscribe)}">${applicantUnsubscribeLabel}</a></p></div>`,
-        headers: { "List-Unsubscribe": `<${unsubscribe}>` },
+        text: `${text}\n\n${unsubscribe ? `${applicantUnsubscribeLabel}: ${unsubscribe}` : applicantUnsubscribeLabel}`,
+        html: `<div style="font-family:Arial,sans-serif;line-height:1.6"><p>${escapeHtml(text).replace(/\r\n?|\n/g, "<br>")}</p><p>${button}</p></div>`,
+        headers: unsubscribe ? { "List-Unsubscribe": `<${unsubscribe}>` } : undefined,
       });
       status = info.accepted.length ? "sent" : "failed";
     } catch (error) {
@@ -138,7 +148,7 @@ export function handleApplicantUnsubscribe(req: IncomingMessage, res: ServerResp
 }
 
 export async function runAutomaticApplicantMail(): Promise<void> {
-  if (applicantMailSetupError()) return;
+  if (applicantMailSetupError(true)) return;
   const settings = getApplicantMailSettings();
   if (!settings.enabled) return;
   const due = olympiadDatabase().prepare(`SELECT CAST(id AS TEXT) AS id FROM olympiad_registrations r

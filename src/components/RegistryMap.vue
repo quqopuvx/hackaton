@@ -154,7 +154,9 @@ function accessibleName(code: string): string {
         <button type="button" class="map-control" :disabled="zoom <= 1" aria-label="Отдалить карту" @click="changeZoom(1 / 1.5)">−</button>
         <button type="button" class="map-control text-xs!" :disabled="zoom <= 1" aria-label="Сбросить масштаб карты" @click="resetView">1×</button>
       </div>
-      <p v-if="active" class="map-active">{{ active.region }} · {{ counts.get(active.code) ?? 0 }}</p>
+      <Transition name="popup">
+        <p v-if="active" class="map-active">{{ active.region }} · {{ counts.get(active.code) ?? 0 }}</p>
+      </Transition>
     </div>
 
     <div class="map-summary">

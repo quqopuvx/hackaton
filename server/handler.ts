@@ -451,8 +451,8 @@ function handleOlympiadContacts(req: IncomingMessage, res: ServerResponse, url: 
   }
 }
 
-function applicantMailAuthorized(res: ServerResponse, accessCode: unknown): boolean {
-  const setupError = applicantMailSetupError();
+function applicantMailAuthorized(res: ServerResponse, accessCode: unknown, automatic = false): boolean {
+  const setupError = applicantMailSetupError(automatic);
   if (setupError) {
     send(res, 503, { error: setupError });
     return false;
@@ -497,7 +497,7 @@ async function handleApplicantMail(req: IncomingMessage, res: ServerResponse, ba
 
 async function handleApplicantMailSettings(req: IncomingMessage, res: ServerResponse, user: Account): Promise<void> {
   if (req.method === "GET") {
-    send(res, 200, { settings: getApplicantMailSettings(), setupError: applicantMailSetupError() });
+    send(res, 200, { settings: getApplicantMailSettings(), setupError: applicantMailSetupError(true) });
     return;
   }
   if (req.method !== "PUT") {
@@ -516,10 +516,10 @@ async function handleApplicantMailSettings(req: IncomingMessage, res: ServerResp
       ((enabled || text !== "") && !isMailText(text))) {
     throw new InputError("Проверьте срок, тему и текст автоматического письма.");
   }
-  if (enabled && !applicantMailAuthorized(res, accessCode)) return;
+  if (enabled && !applicantMailAuthorized(res, accessCode, true)) return;
   const settings: ApplicantMailSettings = { enabled, delayDays: delay, subject: subject.trim(), text: text.trim() };
   saveApplicantMailSettings(settings);
-  send(res, 200, { settings, setupError: applicantMailSetupError() });
+  send(res, 200, { settings, setupError: applicantMailSetupError(true) });
 }
 
 export async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boolean> {

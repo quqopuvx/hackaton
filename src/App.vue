@@ -682,18 +682,20 @@ onUnmounted(() => {
             aria-controls="profile-menu" :aria-expanded="menuOpen" @click="toggleMenu">
             <span aria-hidden="true"></span>
           </button>
-          <div v-show="menuOpen" id="profile-menu" class="profile-menu-panel">
-            <div class="profile-menu-name">
-              <p>{{ user.name }}</p>
-              <p v-if="user.name !== accountRoleLabels[user.role]" class="text-xs font-normal text-secondary">{{ accountRoleLabels[user.role] }}</p>
+          <Transition name="popup">
+            <div v-show="menuOpen" id="profile-menu" class="profile-menu-panel" :inert="!menuOpen">
+              <div class="profile-menu-name">
+                <p>{{ user.name }}</p>
+                <p v-if="user.name !== accountRoleLabels[user.role]" class="text-xs font-normal text-secondary">{{ accountRoleLabels[user.role] }}</p>
+              </div>
+              <a v-for="(label, page) in visibleProfileLinks" :key="page" :href="pagePaths[page]" class="profile-menu-item"
+                :aria-current="tab === page ? 'page' : undefined" @click="openProfilePage($event, page)">{{ label }}</a>
+              <button type="button" class="profile-menu-item profile-menu-exit" :disabled="signingOut" @click="emit('logout')">
+                {{ signingOut ? "Выхожу…" : "Выйти из аккаунта" }}
+              </button>
+              <p v-if="logoutError" role="alert" class="profile-menu-notice">{{ logoutError }}</p>
             </div>
-            <a v-for="(label, page) in visibleProfileLinks" :key="page" :href="pagePaths[page]" class="profile-menu-item"
-              :aria-current="tab === page ? 'page' : undefined" @click="openProfilePage($event, page)">{{ label }}</a>
-            <button type="button" class="profile-menu-item profile-menu-exit" :disabled="signingOut" @click="emit('logout')">
-              {{ signingOut ? "Выхожу…" : "Выйти из аккаунта" }}
-            </button>
-            <p v-if="logoutError" role="alert" class="profile-menu-notice">{{ logoutError }}</p>
-          </div>
+          </Transition>
         </div>
       </nav>
     </header>
@@ -958,10 +960,14 @@ onUnmounted(() => {
         </ul>
         <p v-if="mailSelectionLocked" class="mt-3 text-sm text-secondary">Список зафиксирован для текущей рассылки.</p>
       </dialog>
-      <InstitutionDetailsDialog v-if="openedInstitution" :key="openedInstitution.id" :institution="openedInstitution"
-        @close="openedInstitution = undefined" />
-      <InstitutionEditor v-if="editing" :key="editing.id" :institution="editing" :saving="savingEdit" :error="editError"
-        @close="editing = undefined" @save="saveInstitution" />
+      <Transition name="dialog-motion">
+        <InstitutionDetailsDialog v-if="openedInstitution" :key="openedInstitution.id" :institution="openedInstitution"
+          @close="openedInstitution = undefined" />
+      </Transition>
+      <Transition name="dialog-motion">
+        <InstitutionEditor v-if="editing" :key="editing.id" :institution="editing" :saving="savingEdit" :error="editError"
+          @close="editing = undefined" @save="saveInstitution" />
+      </Transition>
     </main>
   </div>
 </template>

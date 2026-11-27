@@ -1,45 +1,20 @@
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import nodemailer from "nodemailer";
-import { isSingleEmail, personalizeSchoolMail } from "../lib/school-mail.ts";
+import { randomUUID } from "node:crypto";
+import { personalizeSchoolMail } from "../lib/school-mail.ts";
 import type { SchoolMailLayout, SchoolMailOutcome, SchoolMailRecipient } from "../lib/school-mail.ts";
 import { renderSchoolMailHtml } from "../lib/school-mail-html.ts";
 import { renderDesignedMail } from "../lib/school-mail-design-html.ts";
 import { mailDesignText, type MailImage, type SchoolMailDesign } from "../lib/school-mail-design.ts";
 import { claimSchoolMail, findInstitution, finishSchoolMail } from "../lib/store.ts";
+import { createMailTransport } from "./mail-transport.ts";
 
-function smtpConfig() {
-  const host = process.env.SMTP_HOST?.trim();
-  const port = Number(process.env.SMTP_PORT ?? "587");
-  const user = process.env.SMTP_USER?.trim();
-  const pass = process.env.SMTP_PASS;
-  const from = process.env.MAIL_FROM?.trim();
-  const accessCode = process.env.MAIL_ACCESS_CODE;
-  if (!host || !Number.isInteger(port) || port < 1 || port > 65535 ||
-      !user || !pass || !from || !isSingleEmail(from) || !accessCode || accessCode.length < 16) return;
-  return { host, port, user, pass, from, accessCode };
-}
-
-export function authorizeSchoolMail(code: string): "unconfigured" | "denied" | "allowed" {
-  const config = smtpConfig();
-  if (!config) return "unconfigured";
-  const digest = (value: string) => createHash("sha256").update(value).digest();
-  return timingSafeEqual(digest(code), digest(config.accessCode)) ? "allowed" : "denied";
-}
+export { authorizeMail as authorizeSchoolMail } from "./mail-transport.ts";
 
 export async function sendSchoolMail(
   requestId: string, template: string, recipients: SchoolMailRecipient[],
   message: { subject: string; text: string; layout: SchoolMailLayout; replyTo?: string; design?: SchoolMailDesign | null; signature?: string },
   campaignId: string | null = null,
 ): Promise<SchoolMailOutcome[]> {
-  const config = smtpConfig();
-  if (!config) throw new Error("Отправка писем ещё не настроена.");
-  const from = { name: "МеркурИИй", address: config.from };
-  const transport = nodemailer.createTransport({
-    host: config.host, port: config.port, secure: config.port === 465, requireTLS: config.port !== 465,
-    auth: { user: config.user, pass: config.pass }, pool: true, maxConnections: 3,
-    connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 20_000,
-    disableFileAccess: true, disableUrlAccess: true,
-  });
+  const { from, transport } = createMailTransport();
 
   const { design } = message;
   const images = new Map<string, { cid: string; content: Buffer; contentType: string }>();

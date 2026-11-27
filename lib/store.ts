@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { Pool, type PoolClient } from "pg";
 import type { Institution, InstitutionDetails, InstitutionEdits } from "./types.ts";
+import type { OlympiadSchool } from "./olympiad.ts";
 import { schoolMailTemplates } from "./school-mail.ts";
 import type { SavedSchoolMailTemplate, SchoolMailHistoryEntry, SchoolMailOutcome, SchoolMailRecipient, SchoolMailReminder, SchoolMailTemplate } from "./school-mail.ts";
 import { inferInstitutionType } from "./institution-types.ts";
@@ -59,11 +60,13 @@ async function initialize(): Promise<Pool> {
   }
 }
 
-const fields = `id::text, response_status AS "responseStatus",
+const institutionTypeField = "CASE WHEN manual_edits ? 'institutionType' THEN manual_edits->>'institutionType' ELSE institution_type END";
+const institutionIdentity = `id::text,
   COALESCE(manual_edits->>'name', name) AS name,
   COALESCE(manual_edits->>'city', city) AS city,
-  COALESCE(manual_edits->>'region', region) AS region,
-  CASE WHEN manual_edits ? 'institutionType' THEN manual_edits->>'institutionType' ELSE institution_type END AS "institutionType",
+  COALESCE(manual_edits->>'region', region) AS region`;
+const fields = `${institutionIdentity}, response_status AS "responseStatus",
+  ${institutionTypeField} AS "institutionType",
   CASE WHEN manual_edits ? 'leaderName' THEN manual_edits->>'leaderName' ELSE leader_name END AS "leaderName",
   CASE WHEN manual_edits ? 'institutionEmail' THEN manual_edits->>'institutionEmail' ELSE institution_email END AS "institutionEmail",
   CASE WHEN manual_edits ? 'institutionPhone' THEN manual_edits->>'institutionPhone' ELSE institution_phone END AS "institutionPhone",
@@ -87,6 +90,15 @@ export async function listInstitutions(): Promise<Institution[]> {
   const pool = await database();
   const result = await pool.query<Institution>(
     `SELECT ${fields} FROM institutions ORDER BY region, city, name, id`,
+  );
+  return result.rows;
+}
+
+export async function listOlympiadSchools(): Promise<OlympiadSchool[]> {
+  const pool = await database();
+  const result = await pool.query<OlympiadSchool>(
+    `SELECT ${institutionIdentity} FROM institutions
+     WHERE (${institutionTypeField}) = 'school' ORDER BY region, city, name, id`,
   );
   return result.rows;
 }

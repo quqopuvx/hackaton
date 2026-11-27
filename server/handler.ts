@@ -2,11 +2,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { DatabaseError } from "pg";
 import { randomUUID } from "node:crypto";
 import { authorizeSchoolMail, sendSchoolMail } from "./school-mail.ts";
+import { applicantMailSetupError, getApplicantMailSettings, handleApplicantUnsubscribe, saveApplicantMailSettings, sendApplicantMail } from "./applicant-mail.ts";
+import { applicantMailDelays, type ApplicantMailSettings } from "../lib/olympiad.ts";
 import { readSchoolReplies } from "./school-replies.ts";
 import { isSchoolMailLayout, isSingleEmail, schoolMailDefaultLayout, schoolMailDraft, schoolMailLimit, schoolMailSubjectLimit, schoolMailTemplates, schoolMailTextLimit, type SchoolMailLayout, type SchoolMailRecipient, type SchoolMailTemplate } from "../lib/school-mail.ts";
 import { refreshInstitution, runAgent } from "../lib/ai/agent.ts";
 import { institutionTypeLabels, type InstitutionType } from "../lib/institution-types.ts";
-import { createCampaign, deleteCampaign, deleteSchoolMailTemplate, findCampaign, findInstitution, findSchoolMailTemplate, hasSchoolMailRequest, listCampaigns, listInstitutions, listSchoolMailHistory, listSchoolMailReminders, listSchoolMailTemplates, normalize, readCampaignView, saveCampaignTurn, saveSchoolMailTemplate, updateCampaignDetails, updateInstitution } from "../lib/store.ts";
+import { createCampaign, deleteCampaign, deleteSchoolMailTemplate, findCampaign, findInstitution, findSchoolMailTemplate, hasSchoolMailRequest, listCampaigns, listInstitutions, listOlympiadSchools, listSchoolMailHistory, listSchoolMailReminders, listSchoolMailTemplates, normalize, readCampaignView, saveCampaignTurn, saveSchoolMailTemplate, updateCampaignDetails, updateInstitution } from "../lib/store.ts";
 import { campaignMessageLimit } from "../lib/campaigns.ts";
 import { planCampaignTurn, recordCampaignExchange } from "./campaign-agent.ts";
 import { addCampaignSchool } from "./campaign-schools.ts";
@@ -14,6 +16,8 @@ import type { InstitutionEdits, SearchEvent } from "../lib/types.ts";
 import type { Account } from "../lib/accounts.ts";
 import { isSchoolMailDesign, mailDesignRequestLimit, mailDesignText, type SchoolMailDesign } from "../lib/school-mail-design.ts";
 import { allowsRequestOrigin, readAudit, readSession, recordAudit, setSessionCookie, signIn, signOut } from "./accounts.ts";
+
+import { allowsOlympiadAgent, listOlympiadInvitationContacts, listSchoolApplicants, parseOlympiadRegistration, saveOlympiadRegistration } from "./olympiad.ts";
 
 class InputError extends Error {}
 
@@ -402,11 +406,114 @@ async function streamSearch(query: string, res: ServerResponse, user: Account): 
   }
 }
 
+async function handleOlympiadRegistration(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    send(res, 405, { error: "Метод не поддерживается." });
+    return;
+  }
+  if (req.headers["content-type"]?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
+    send(res, 415, { error: "Ожидается запрос в формате JSON." });
+    return;
+  }
+  const registration = parseOlympiadRegistration(await readBody(req, 4096));
+  if (registration.error) throw new InputError(registration.error);
+  const school = await findInstitution(registration.schoolId);
+  if (school?.institutionType !== "school") throw new InputError("Выберите действующую школу из реестра.");
+  try {
+    saveOlympiadRegistration(registration);
+  } catch {
+    send(res, 503, { error: "Не удалось сохранить регистрацию. Попробуй ещё раз." });
+    return;
+  }
+  send(res, 200, { registered: true });
+}
+
+function handleOlympiadContacts(req: IncomingMessage, res: ServerResponse, url: URL): void {
+  if (!allowsOlympiadAgent(req.headers.authorization)) {
+    res.setHeader("WWW-Authenticate", "Bearer");
+    send(res, 401, { error: "Требуется токен агента." });
+    return;
+  }
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET");
+    send(res, 405, { error: "Метод не поддерживается." });
+    return;
+  }
+  const after = url.searchParams.get("after") ?? "0";
+  if (!/^\d{1,19}$/.test(after) || BigInt(after) > 9223372036854775807n) {
+    throw new InputError("Некорректный курсор.");
+  }
+  try {
+    send(res, 200, listOlympiadInvitationContacts(after));
+  } catch {
+    send(res, 503, { error: "Не удалось прочитать контакты олимпиады." });
+  }
+}
+
+function applicantMailAuthorized(res: ServerResponse, accessCode: unknown): boolean {
+  const setupError = applicantMailSetupError();
+  if (setupError) {
+    send(res, 503, { error: setupError });
+    return false;
+  }
+  if (authorizeSchoolMail(typeof accessCode === "string" ? accessCode : "") !== "allowed") {
+    send(res, 403, { error: "Неверный код отправки писем." });
+    return false;
+  }
+  return true;
+}
+
+async function handleApplicantMail(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    send(res, 405, { error: "Метод не поддерживается." });
+    return;
+  }
+  const { requestId, applicantId, subject, text, accessCode } = await readBody(req, 16 * 1024);
+  if (typeof requestId !== "string" || !uuidPattern.test(requestId) || typeof applicantId !== "string" ||
+      !/^[1-9][0-9]{0,18}$/.test(applicantId) || BigInt(applicantId) > 9223372036854775807n) {
+    throw new InputError("Выберите абитуриента из реестра.");
+  }
+  if (!isMailLine(subject, schoolMailSubjectLimit) || !isMailText(text)) throw new InputError("Проверьте тему и текст письма.");
+  if (!applicantMailAuthorized(res, accessCode)) return;
+  send(res, 200, { status: await sendApplicantMail(requestId.toLowerCase(), applicantId, { subject: subject.trim(), text: text.trim() }) });
+}
+
+async function handleApplicantMailSettings(req: IncomingMessage, res: ServerResponse, user: Account): Promise<void> {
+  if (req.method === "GET") {
+    send(res, 200, { settings: getApplicantMailSettings(), setupError: applicantMailSetupError() });
+    return;
+  }
+  if (req.method !== "PUT") {
+    res.setHeader("Allow", "GET, PUT");
+    send(res, 405, { error: "Метод не поддерживается." });
+    return;
+  }
+  if (user.role !== "admin") {
+    send(res, 403, { error: "Автоматическую рассылку настраивает администратор." });
+    return;
+  }
+  const { enabled, delayDays, subject, text, accessCode } = await readBody(req, 16 * 1024);
+  const delay = applicantMailDelays.find((allowed) => allowed === delayDays);
+  if (typeof enabled !== "boolean" || !delay || typeof subject !== "string" || typeof text !== "string" ||
+      ((enabled || subject !== "") && !isMailLine(subject, schoolMailSubjectLimit)) ||
+      ((enabled || text !== "") && !isMailText(text))) {
+    throw new InputError("Проверьте срок, тему и текст автоматического письма.");
+  }
+  if (enabled && !applicantMailAuthorized(res, accessCode)) return;
+  const settings: ApplicantMailSettings = { enabled, delayDays: delay, subject: subject.trim(), text: text.trim() };
+  saveApplicantMailSettings(settings);
+  send(res, 200, { settings, setupError: applicantMailSetupError() });
+}
+
 export async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const { pathname } = url;
   if (!pathname.startsWith("/api/")) return false;
+  if (handleApplicantUnsubscribe(req, res, pathname)) return true;
   const institutionRoute = /^\/api\/institutions\/([1-9][0-9]{0,18})$/.exec(pathname);
+  const applicantsRoute = /^\/api\/institutions\/([1-9][0-9]{0,18})\/applicants$/.exec(pathname);
   const refreshRoute = /^\/api\/institutions\/([1-9][0-9]{0,18})\/refresh$/.exec(pathname);
   const campaignRoute = /^\/api\/campaigns\/([^/]+)$/.exec(pathname);
   const templateRoute = /^\/api\/school-mail\/templates\/([^/]+)$/.exec(pathname);
@@ -416,6 +523,23 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       send(res, 403, { error: "Откройте приложение и повторите действие." });
       return true;
     }
+    if (pathname === "/api/olympiad/registrations") {
+      await handleOlympiadRegistration(req, res);
+      return true;
+    }
+    if (pathname === "/api/olympiad/schools") {
+      if (req.method !== "GET") {
+        res.setHeader("Allow", "GET");
+        send(res, 405, { error: "Метод не поддерживается." });
+      } else {
+        send(res, 200, { schools: await listOlympiadSchools() });
+      }
+      return true;
+    }
+    if (pathname === "/api/olympiad/invitation-contacts") {
+      handleOlympiadContacts(req, res, url);
+      return true;
+    }
     if (pathname.startsWith("/api/auth/")) {
       await handleAuth(req, res, pathname);
       return true;
@@ -423,6 +547,24 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     const user = await readSession(req);
     if (!user) {
       send(res, 401, { error: "Войдите в аккаунт." });
+      return true;
+    }
+    if (applicantsRoute) {
+      if (req.method !== "GET") {
+        res.setHeader("Allow", "GET");
+        send(res, 405, { error: "Метод не поддерживается." });
+      } else {
+        try {
+          send(res, 200, { applicants: listSchoolApplicants(applicantsRoute[1]), mailSetupError: applicantMailSetupError() });
+        } catch {
+          send(res, 503, { error: "Не удалось загрузить список абитуриентов." });
+        }
+      }
+      return true;
+    }
+    if (pathname === "/api/olympiad/applicant-mail" || pathname === "/api/olympiad/applicant-mail/settings") {
+      if (pathname.endsWith("/settings")) await handleApplicantMailSettings(req, res, user);
+      else await handleApplicantMail(req, res);
       return true;
     }
     if (pathname === "/api/audit") {

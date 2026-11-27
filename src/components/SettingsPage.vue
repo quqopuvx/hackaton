@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { isSingleEmail, schoolMailTemplates, type SavedSchoolMailTemplate } from "../../lib/school-mail";
-import { reminderIntervals, signatureLimit, type Preferences } from "../preferences";
+import { signatureLimit, type Preferences } from "../preferences";
 import { regionMap } from "../regions";
+import ApplicantMailSettings from "./ApplicantMailSettings.vue";
 
-const props = defineProps<{ preferences: Preferences; templates: SavedSchoolMailTemplate[]; storageError: boolean }>();
+const props = defineProps<{ preferences: Preferences; templates: SavedSchoolMailTemplate[]; storageError: boolean; canManageApplicantMail: boolean }>();
 const emit = defineEmits<{ save: [preferences: Preferences] }>();
 const draft = ref({ ...props.preferences });
 const status = ref("");
@@ -77,19 +78,7 @@ function save(): void {
         </select>
       </label>
     </section>
-    <section :class="cardClass" aria-labelledby="settings-reminders">
-      <h3 id="settings-reminders" class="text-lg font-semibold">Повторные рассылки</h3>
-      <label class="grid gap-1 text-sm font-medium">
-        Срок до напоминания
-        <select v-model.number="draft.reminderDays" :class="fieldClass">
-          <option v-for="days in reminderIntervals" :key="days" :value="days">{{ days }} дн.</option>
-        </select>
-      </label>
-      <label class="flex min-h-11 items-center gap-3 text-sm">
-        <input v-model="draft.excludeReplied" type="checkbox" class="size-4 shrink-0 accent-accent" />
-        Исключать ответившие учреждения из списка напоминаний
-      </label>
-    </section>
+    <ApplicantMailSettings :can-manage="canManageApplicantMail" />
     <div class="flex flex-wrap items-center gap-3 sm:col-span-2">
       <button type="submit" class="min-h-11 rounded-ui bg-accent px-5 text-sm font-semibold text-white">Сохранить настройки</button>
       <p v-if="error" role="alert" class="text-sm text-danger">{{ error }}</p>

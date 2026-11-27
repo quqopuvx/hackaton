@@ -33,6 +33,7 @@
 }
 
 :root {
+  --app-content-width: min(89%, 107rem);
   --scrollbar-thumb: #d7ccd9;
   --header-surface: #efeeef;
   --on-accent: #fff;
@@ -345,7 +346,6 @@ body {
 }
 
 .app-content {
-  --app-content-width: min(89%, 107rem);
   position: relative;
   display: flex;
   flex: 1;
@@ -1057,7 +1057,7 @@ textarea.rounded-ui {
 }
 
 @media (max-width: 42rem) {
-  .app-content {
+  :root {
     --app-content-width: calc(100% - 2rem);
   }
 

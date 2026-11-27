@@ -6,6 +6,7 @@ import { institutionTypeLabels } from "../lib/institution-types";
 import { responseStatusLabels, type Institution, type InstitutionDetails, type InstitutionEdits, type InstitutionRefreshResult, type SearchEvent, type SearchResult } from "../lib/types";
 import { readLines } from "../lib/read-lines";
 import InstitutionEditor from "./components/InstitutionEditor.vue";
+import InstitutionDetailsDialog from "./components/InstitutionDetailsDialog.vue";
 import ItemsPanel from "./components/ItemsPanel.vue";
 import SchoolMailPage from "./components/SchoolMailPage.vue";
 import SchoolMailTemplates from "./components/SchoolMailTemplates.vue";
@@ -41,6 +42,7 @@ const submittedQuery = ref("");
 const results = ref<SearchResult | null>(null);
 const previews = ref<Array<InstitutionDetails & { checkingContacts: boolean }>>([]);
 const registry = ref<Institution[]>([]);
+const openedInstitution = ref<Institution>();
 const mailSelection = ref(new Set<string>());
 const selectedSearchRows = ref(new Map<string, Institution>());
 const mailSelectionLocked = ref(false);
@@ -112,6 +114,11 @@ function currentPage(): Page {
 }
 
 const tab = ref<Page>(currentPage());
+watch(tab, () => { openedInstitution.value = undefined; });
+
+function openInstitution(id: string): void {
+  openedInstitution.value = registry.value.find((institution) => institution.id === id);
+}
 const tabPanel = ref<HTMLElement>();
 const menuOpen = ref(false);
 const profileMenu = ref<HTMLElement>();
@@ -853,10 +860,11 @@ onUnmounted(() => {
                   {{ group.region }}
                   <span class="registry-group-count"><span class="sr-only">Учреждений: </span>{{ group.items.length }}</span>
                 </h2>
-                <ItemsPanel :items="group.items" :placeholders="0" :row-updates="rowUpdates" editable
+                <ItemsPanel :items="group.items" :placeholders="0" :row-updates="rowUpdates" editable openable
                   :mail-selection="mailSelection"
                   :mail-selection-locked="mailSelectionLocked"
-                  @toggle-mail="toggleMail" @write-mail="writeToInstitution" @edit="editInstitution" @refresh="refreshRegistryInstitution" />
+                  @open="openInstitution" @toggle-mail="toggleMail" @write-mail="writeToInstitution"
+                  @edit="editInstitution" @refresh="refreshRegistryInstitution" />
               </section>
             </div>
           </section>
@@ -913,7 +921,7 @@ onUnmounted(() => {
             class="min-h-0 w-full flex-1 overflow-y-auto pt-4 pb-5 [scrollbar-gutter:stable] sm:pt-5">
             <h2 :id="tab + '-title'" tabindex="-1" class="mb-4 text-xl font-extrabold text-accent sm:text-2xl">{{ profileLinks[tab] }}</h2>
             <SettingsPage v-if="tab === 'settings'" :preferences="preferences" :templates="savedTemplates"
-              :storage-error="preferencesStorageError" @save="savePreferences" />
+              :storage-error="preferencesStorageError" :can-manage-applicant-mail="user.role === 'admin'" @save="savePreferences" />
             <NotificationsPage v-else-if="tab === 'notifications'" :items="notifications" :enabled="preferences.notifications" :refreshing="checkingReplies"
               :error="replyError" @toggle="updateNotificationPreference" @refresh="checkReplies" />
             <AuditPage v-else-if="user.role === 'admin'" />
@@ -950,6 +958,8 @@ onUnmounted(() => {
         </ul>
         <p v-if="mailSelectionLocked" class="mt-3 text-sm text-secondary">Список зафиксирован для текущей рассылки.</p>
       </dialog>
+      <InstitutionDetailsDialog v-if="openedInstitution" :key="openedInstitution.id" :institution="openedInstitution"
+        @close="openedInstitution = undefined" />
       <InstitutionEditor v-if="editing" :key="editing.id" :institution="editing" :saving="savingEdit" :error="editError"
         @close="editing = undefined" @save="saveInstitution" />
     </main>

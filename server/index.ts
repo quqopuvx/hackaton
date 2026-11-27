@@ -3,6 +3,7 @@ import { readFile, stat } from "node:fs/promises";
 import { extname, join, normalize, resolve } from "node:path";
 import { loadLocalEnv } from "./env.ts";
 import { handleApi } from "./handler.ts";
+import { startApplicantMailScheduler } from "./applicant-mail.ts";
 
 loadLocalEnv();
 
@@ -52,5 +53,6 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(port, host, () => {
+  server.once("close", startApplicantMailScheduler());
   console.log(`Реестр учебных учреждений: http://localhost:${port}`);
 });

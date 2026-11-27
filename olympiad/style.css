@@ -1,0 +1,91 @@
+.olympiad-page {
+  min-height: 100svh;
+  background: var(--color-canvas);
+}
+
+.workspace {
+  width: var(--app-content-width);
+  margin-inline: auto;
+  padding-block: clamp(1.5rem, 5vw, 4rem);
+}
+
+.panel {
+  padding: clamp(1rem, 3vw, 2rem);
+  border: 1px solid var(--color-line);
+  border-radius: 1.5rem;
+  background: var(--color-surface);
+}
+
+[hidden] { display: none !important; }
+h1 { font-size: clamp(1.65rem, 4vw, 2.3rem); font-weight: 700; line-height: 1.2; }
+h2 { font-size: 1.25rem; font-weight: 700; line-height: 1.3; }
+h1 + p { margin-top: .5rem; }
+.muted { color: var(--color-secondary); }
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  padding: .3rem 1rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-ui);
+  background: var(--color-surface);
+  color: var(--color-accent);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.action:hover { background: var(--color-accent-soft); }
+.action-primary, .action[aria-pressed="true"] {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--on-accent);
+}
+.action-primary:hover, .action[aria-pressed="true"]:hover { background: var(--accent-hover); }
+.action:disabled { opacity: .55; cursor: not-allowed; }
+.full-width { width: 100%; }
+.olympiad-page :focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+
+#registration-form { margin-top: 1.25rem; }
+.field { display: block; margin-bottom: .3rem; font-weight: 700; }
+.field + :is(input, select) {
+  width: 100%;
+  min-height: 2.75rem;
+  margin-bottom: 1rem;
+  padding: .5rem .75rem;
+  border: 1px solid var(--color-line);
+  border-radius: .75rem;
+  background: var(--color-canvas);
+}
+.field + select { margin-bottom: .25rem; }
+#school-status { margin-bottom: 1rem; }
+#retry-schools { margin-bottom: 1rem; }
+.consents { display: grid; gap: .55rem; margin-bottom: 1.15rem; }
+.check { display: flex; align-items: flex-start; gap: .6rem; cursor: pointer; }
+.check input { flex: none; width: 1rem; height: 1rem; margin-top: .35rem; accent-color: var(--color-accent); }
+.text-button { justify-self: start; color: var(--color-accent); text-decoration: underline; cursor: pointer; }
+.consent-link { margin-inline-start: 1.6rem; }
+#registration-error { margin-bottom: .75rem; color: var(--color-danger); }
+
+.filters { display: flex; flex-wrap: wrap; gap: .5rem; margin-block: 1.25rem; }
+.catalog-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr)); gap: 1rem; }
+.catalog-card { display: flex; flex-direction: column; align-items: flex-start; gap: .55rem; }
+.catalog-card .action { margin-top: auto; }
+.card-category { color: var(--color-accent); font-size: .9rem; font-weight: 700; }
+.catalog-card .muted { padding-bottom: .4rem; }
+
+.back { margin-bottom: 1rem; }
+#quiz-form, .guide-list, details { margin-top: 1rem; }
+fieldset { min-width: 0; margin-bottom: .9rem; padding: .5rem .9rem .75rem; border: 1px solid var(--color-line); border-radius: .75rem; }
+fieldset .check { padding-block: .15rem; }
+legend { padding-inline: .25rem; font-weight: 700; }
+#quiz-result { margin-top: .8rem; color: var(--status-replied); font-weight: 700; }
+details { padding: .7rem 1rem; border: 1px solid var(--color-line); border-radius: .75rem; }
+details p { margin-top: .4rem; }
+summary { cursor: pointer; font-weight: 700; }
+.guide-list { padding-inline-start: 1.3rem; list-style: disc; }
+
+dialog.panel { width: min(34rem, 100% - 2rem); margin: auto; color: var(--color-ink); }
+dialog::backdrop { background: #211d2266; }
+dialog p { margin-block: .75rem; }

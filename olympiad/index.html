@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Олимпиады, курсы и материалы для будущих абитуриентов проекта «МеркурИИй».">
+    <title>Олимпиады и курсы — МеркурИИй</title>
+  </head>
+  <body class="olympiad-page">
+    <header class="site-header">
+      <a class="brand" href="/olympiad/"><span class="brand-mark" aria-hidden="true"></span>МеркурИИй</a>
+    </header>
+    <main class="workspace">
+      <section class="panel" id="registration" aria-labelledby="registration-title">
+        <h1 id="registration-title">Регистрация</h1>
+        <p class="muted">Зарегистрируйся, чтобы открыть каталог олимпиад и курсов. В демоверсии используй вымышленное имя и тестовый адрес.</p>
+        <form id="registration-form" method="post" action="/api/olympiad/registrations">
+          <noscript><p>Для регистрации включи JavaScript.</p></noscript>
+          <label class="field" for="name">Имя</label>
+          <input id="name" name="name" type="text" maxlength="100" placeholder="Например, Саша" required>
+          <label class="field" for="email">Электронная почта</label>
+          <input id="email" name="email" type="email" maxlength="254" placeholder="student@example.com" required>
+          <label class="field" for="school-search">Поиск школы</label>
+          <input id="school-search" type="search" placeholder="Название, город или регион" disabled>
+          <label class="field" for="school">Школа</label>
+          <select id="school" name="schoolId" aria-describedby="school-status" required disabled>
+            <option value="">Выбери свою школу</option>
+          </select>
+          <p id="school-status" class="muted" role="status">Загружаю школы из реестра…</p>
+          <button class="text-button" id="retry-schools" type="button" hidden>Повторить загрузку</button>
+          <div class="consents">
+            <label class="check"><input name="consent" type="checkbox" required><span>Соглашаюсь на обработку имени, электронной почты и сведений о школе для регистрации.</span></label>
+            <button class="text-button consent-link" type="button" id="open-consent">Читать демо-соглашение</button>
+            <label class="check"><input name="invitationOptIn" type="checkbox"><span>Хочу получать приглашения поступить в вуз по почте <span class="muted">(по желанию)</span>.</span></label>
+          </div>
+          <p id="registration-error" role="alert" hidden></p>
+          <button class="action action-primary full-width" type="submit" disabled>Зарегистрироваться</button>
+        </form>
+      </section>
+
+      <section id="catalog" aria-labelledby="catalog-title" hidden>
+        <h1 id="catalog-title" tabindex="-1">Каталог</h1>
+        <p class="muted catalog-intro">Олимпиады, курсы и материалы для будущих абитуриентов.</p>
+        <div class="filters" role="group" aria-label="Категории каталога">
+          <button class="action" type="button" data-filter="all" aria-pressed="true">Все</button>
+          <button class="action" type="button" data-filter="olympiads" aria-pressed="false">Олимпиады</button>
+          <button class="action" type="button" data-filter="courses" aria-pressed="false">Курсы</button>
+          <button class="action" type="button" data-filter="materials" aria-pressed="false">Материалы</button>
+        </div>
+        <ul class="catalog-list" aria-label="Программы и материалы">
+          <li class="panel catalog-card" data-category="olympiads">
+            <p class="card-category">Олимпиада</p>
+            <h2>Точка старта</h2>
+            <p class="muted">Три пробных задания по математике и логике. Можно проходить без таймера.</p>
+            <button class="action action-primary" type="button" data-open="activity" aria-label="Открыть олимпиаду «Точка старта»">Открыть</button>
+          </li>
+          <li class="panel catalog-card" data-category="courses">
+            <p class="card-category">Мини-курс</p>
+            <h2>Как выбрать направление</h2>
+            <p class="muted">Два коротких урока о том, как сузить выбор и сравнить учебные программы.</p>
+            <button class="action action-primary" type="button" data-open="course" aria-label="Открыть курс «Как выбрать направление»">Открыть</button>
+          </li>
+          <li class="panel catalog-card" data-category="materials">
+            <p class="card-category">Памятка</p>
+            <h2>Подготовка к поступлению</h2>
+            <p class="muted">Список того, что стоит уточнить у вуза перед подачей документов.</p>
+            <button class="action action-primary" type="button" data-open="guide" aria-label="Открыть памятку «Подготовка к поступлению»">Открыть</button>
+          </li>
+        </ul>
+      </section>
+
+      <section class="panel detail" id="activity" aria-labelledby="quiz-title" hidden>
+        <button class="action back" type="button" data-back>К каталогу</button>
+        <h1 id="quiz-title" tabindex="-1">Точка старта</h1>
+        <p class="muted">Выбери по одному ответу в каждом задании.</p>
+        <form id="quiz-form"></form>
+        <p id="quiz-result" role="status" hidden></p>
+      </section>
+
+      <section class="panel detail" id="course" aria-labelledby="course-title" hidden>
+        <button class="action back" type="button" data-back>К каталогу</button>
+        <h1 id="course-title" tabindex="-1">Как выбрать направление</h1>
+        <details>
+          <summary>Урок 1. Определи свои интересы</summary>
+          <p>Выпиши три темы или задачи, которыми тебе интересно заниматься. Для каждой отметь, что именно привлекает: поиск новых идей, работа с людьми, анализ данных или создание чего-то своими руками. По этому списку подбери несколько направлений обучения.</p>
+        </details>
+        <details>
+          <summary>Урок 2. Сравни учебные программы</summary>
+          <p>Открой учебные планы двух или трёх программ. Сравни обязательные предметы, практику и темы выпускных работ. Запиши вопросы, которые остались, и задай их на дне открытых дверей.</p>
+        </details>
+      </section>
+
+      <section class="panel detail" id="guide" aria-labelledby="guide-title" hidden>
+        <button class="action back" type="button" data-back>К каталогу</button>
+        <h1 id="guide-title" tabindex="-1">Подготовка к поступлению</h1>
+        <p class="muted">Уточни каждый пункт на сайте выбранного вуза или в приёмной комиссии.</p>
+        <ul class="guide-list">
+          <li>Сроки приёма документов для твоей программы.</li>
+          <li>Вступительные испытания и минимальные баллы.</li>
+          <li>Перечень документов и способы подачи.</li>
+          <li>Контакты приёмной комиссии и даты дней открытых дверей.</li>
+        </ul>
+      </section>
+    </main>
+
+    <dialog id="consent-dialog" class="panel" aria-labelledby="consent-title">
+      <form method="dialog">
+        <h2 id="consent-title">Согласие на обработку данных</h2>
+        <p class="muted">Демонстрационный текст. Используй только тестовые данные.</p>
+        <p>При регистрации сервис сохраняет имя, электронную почту, выбранную школу, время регистрации и версию согласия. Сотрудники с доступом к реестру могут открыть карточку школы и увидеть список её участников.</p>
+        <p>Если отдельно отметить получение приглашений, организатор сможет передать имя и почту своему ИИ-агенту для подготовки приглашений поступить в вуз. Этот выбор добровольный.</p>
+        <button class="action action-primary" value="close">Закрыть</button>
+      </form>
+    </dialog>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

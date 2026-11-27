@@ -9,11 +9,12 @@ defineProps<{
   items: DisplayRow[];
   placeholders: number;
   editable?: boolean;
+  openable?: boolean;
   mailSelection?: Set<string>;
   mailSelectionLocked?: boolean;
   rowUpdates?: Record<string, { pending?: boolean; message?: string; error?: boolean }>;
 }>();
-const emit = defineEmits<{ edit: [id: string]; refresh: [id: string]; toggleMail: [id: string]; writeMail: [id: string] }>();
+const emit = defineEmits<{ open: [id: string]; edit: [id: string]; refresh: [id: string]; toggleMail: [id: string]; writeMail: [id: string] }>();
 const columnLabels = {
   name: "Название учреждения",
   type: "Тип учреждения",
@@ -52,7 +53,10 @@ function orderedSources(sources: string[]): string[] {
           :style="{ '--row-delay': `${Math.min(index, 7) * 80}ms` }">
           <th scope="row" role="rowheader" class="col-span-2 text-base font-semibold lg:text-sm"
             :class="[cellClass, { 'institution-name--editable': editable && item.id }]">
-            {{ item.name }}
+            <button v-if="openable && item.id" type="button" aria-haspopup="dialog"
+              class="cursor-pointer rounded-sm text-left text-accent underline decoration-accent/45 underline-offset-4 hover:decoration-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              @click="emit('open', item.id)">{{ item.name }}</button>
+            <template v-else>{{ item.name }}</template>
             <template v-if="editable && item.id">
               <div class="row-actions">
                 <button type="button" class="row-action" title="Редактировать"

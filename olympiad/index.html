@@ -3,34 +3,40 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Олимпиады, курсы и материалы для будущих абитуриентов проекта «МеркурИИй».">
     <title>Олимпиады и курсы — МеркурИИй</title>
   </head>
   <body class="olympiad-page">
     <header class="site-header">
       <a class="brand" href="/olympiad/"><span class="brand-mark" aria-hidden="true"></span>МеркурИИй</a>
+      <button class="action" id="logout" type="button" hidden>Выйти</button>
     </header>
     <main class="workspace">
       <section class="panel" id="registration" aria-labelledby="registration-title">
         <h1 id="registration-title">Регистрация</h1>
-        <p class="muted">Зарегистрируйся, чтобы открыть каталог олимпиад и курсов. В демоверсии используй вымышленное имя и тестовый адрес.</p>
         <form id="registration-form" method="post" action="/api/olympiad/registrations">
           <noscript><p>Для регистрации включи JavaScript.</p></noscript>
           <label class="field" for="name">Имя</label>
           <input id="name" name="name" type="text" maxlength="100" placeholder="Например, Саша" required>
           <label class="field" for="email">Электронная почта</label>
           <input id="email" name="email" type="email" maxlength="254" placeholder="student@example.com" required>
-          <label class="field" for="school-search">Поиск школы</label>
-          <input id="school-search" type="search" placeholder="Название, город или регион" disabled>
-          <label class="field" for="school">Школа</label>
-          <select id="school" name="schoolId" aria-describedby="school-status" required disabled>
-            <option value="">Выбери свою школу</option>
-          </select>
+          <div class="school-picker" id="school-picker">
+            <label class="field" id="school-field" for="school">Школа</label>
+            <button id="school" class="school-trigger" type="button" aria-expanded="false" aria-controls="school-popup" aria-labelledby="school-field school-label" disabled>
+              <span id="school-label">Выбери свою школу</span>
+            </button>
+            <input id="school-value" name="schoolId" type="hidden">
+            <div class="school-popup" id="school-popup" hidden>
+              <input id="school-search" class="school-search" type="search" role="combobox" aria-label="Поиск школы"
+                aria-expanded="true" aria-controls="school-options" aria-autocomplete="list" autocomplete="off" placeholder="Название, город или регион">
+              <ul class="school-options" id="school-options" role="listbox" aria-label="Школы"></ul>
+              <p id="school-empty" class="muted school-empty" role="status" hidden>Школы не найдены.</p>
+            </div>
+          </div>
           <p id="school-status" class="muted" role="status">Загружаю школы из реестра…</p>
           <button class="text-button" id="retry-schools" type="button" hidden>Повторить загрузку</button>
           <div class="consents">
             <label class="check"><input name="consent" type="checkbox" required><span>Соглашаюсь на обработку имени, электронной почты и сведений о школе для регистрации.</span></label>
-            <button class="text-button consent-link" type="button" id="open-consent">Читать демо-соглашение</button>
+            <button class="text-button consent-link" type="button" id="open-consent">Соглашение</button>
             <label class="check"><input name="invitationOptIn" type="checkbox"><span>Хочу получать приглашения поступить в вуз по почте <span class="muted">(по желанию)</span>.</span></label>
           </div>
           <p id="registration-error" role="alert" hidden></p>
@@ -40,7 +46,6 @@
 
       <section id="catalog" aria-labelledby="catalog-title" hidden>
         <h1 id="catalog-title" tabindex="-1">Каталог</h1>
-        <p class="muted catalog-intro">Олимпиады, курсы и материалы для будущих абитуриентов.</p>
         <div class="filters" role="group" aria-label="Категории каталога">
           <button class="action" type="button" data-filter="all" aria-pressed="true">Все</button>
           <button class="action" type="button" data-filter="olympiads" aria-pressed="false">Олимпиады</button>

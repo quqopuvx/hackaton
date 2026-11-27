@@ -82,7 +82,6 @@ onMounted(load);
           <input v-model="accessCode" type="password" autocomplete="off" :class="fieldClass" />
         </label>
       </fieldset>
-      <p v-if="setupError" class="text-sm text-secondary">{{ setupError }}</p>
       <button v-if="canManage" type="button" :disabled="pending || (draft.enabled && !!setupError)"
         class="min-h-11 rounded-ui border border-line px-4 text-sm font-bold text-accent hover:bg-accent-soft disabled:opacity-50"
         @click="save">Сохранить авторассылку</button>

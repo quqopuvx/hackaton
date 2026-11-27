@@ -7,6 +7,7 @@ import type { Institution } from "../../lib/types";
 import SchoolMailPanel from "./SchoolMailPanel.vue";
 import SchoolRepliesPanel from "./SchoolRepliesPanel.vue";
 import SchoolMailHistory from "./SchoolMailHistory.vue";
+import ApplicantMailPage from "./ApplicantMailPage.vue";
 import type { Preferences } from "../preferences";
 
 const props = defineProps<{
@@ -29,8 +30,10 @@ const emit = defineEmits<{
   deliveryError: [requestId: string, message: string]; returnToRecipients: []; templateSaved: [template: SavedSchoolMailTemplate];
 }>();
 const query = ref("");
-const tabs = { compose: "Отправка", replies: "Ответы", history: "Отправленные" } as const;
+const tabs = { compose: "Отправка", applicants: "Абитуриенты", replies: "Ответы", history: "Отправленные" } as const;
 const panel = ref<keyof typeof tabs>("compose");
+const applicantsOpened = ref(false);
+watch(panel, (current) => { if (current === "applicants") applicantsOpened.value = true; });
 const composerKey = ref(0);
 const composerOpened = ref(false);
 const reminderPreset = ref(false);
@@ -85,6 +88,7 @@ const visibleInstitutions = computed(() => {
         :aria-pressed="panel === key" :class="panel === key ? 'border-accent text-accent' : 'border-transparent text-secondary'"
         @click="panel = key">{{ label }}</button>
     </nav>
+    <ApplicantMailPage v-if="applicantsOpened" v-show="panel === 'applicants'" />
     <SchoolRepliesPanel v-show="panel === 'replies'" :active="active && panel === 'replies'" @synced="emit('sent'); emit('replies', $event)" />
     <SchoolMailHistory v-show="panel === 'history'" :active="active && panel === 'history'" :locked="locked"
       :default-days="preferences.reminderDays" :exclude-replied="preferences.excludeReplied" @prepare="prepareReminder" />

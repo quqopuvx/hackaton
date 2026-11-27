@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { applicantUnsubscribeLabel, olympiad, type ApplicantMailSettings } from "../lib/olympiad.ts";
+import { applicantUnsubscribeLabel, olympiad, type ApplicantMailRecipient, type ApplicantMailSettings } from "../lib/olympiad.ts";
 import { escapeHtml } from "../lib/school-mail-design-html.ts";
 import { createMailTransport, mailConfigured } from "./mail-transport.ts";
 import { olympiadDatabase } from "./olympiad.ts";
@@ -10,6 +10,11 @@ type Message = Pick<ApplicantMailSettings, "subject" | "text">;
 const eligible = "invitation_opt_in = 1 AND unsubscribed_at IS NULL AND consent_version IN ('demo-v1', ?)";
 const unsubscribePrefix = "/api/olympiad/unsubscribe/";
 const defaultSettings: ApplicantMailSettings = { enabled: false, delayDays: 7, subject: "", text: "" };
+
+export function listApplicantMailRecipients(): ApplicantMailRecipient[] {
+  return olympiadDatabase().prepare(`SELECT CAST(id AS TEXT) AS id, name, email FROM olympiad_registrations
+    WHERE ${eligible} ORDER BY name, email`).all(olympiad.consentVersion) as ApplicantMailRecipient[];
+}
 
 function applicantMailOrigin(): string | undefined {
   const value = process.env.APPLICANT_MAIL_ORIGIN?.trim() || process.env.APP_ORIGIN?.trim();
@@ -21,8 +26,7 @@ function applicantMailOrigin(): string | undefined {
 }
 
 export function applicantMailSetupError(): string | undefined {
-  if (!applicantMailOrigin()) return "Укажите доступный получателям HTTPS-адрес в APPLICANT_MAIL_ORIGIN для кнопки отписки.";
-  if (!mailConfigured()) return "Настройте SMTP и код отправки писем.";
+  if (!applicantMailOrigin() || !mailConfigured()) return "Отправка писем недоступна.";
 }
 
 export function getApplicantMailSettings(): ApplicantMailSettings {

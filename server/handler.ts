@@ -2,8 +2,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { DatabaseError } from "pg";
 import { randomUUID } from "node:crypto";
 import { authorizeSchoolMail, sendSchoolMail } from "./school-mail.ts";
-import { applicantMailSetupError, getApplicantMailSettings, handleApplicantUnsubscribe, saveApplicantMailSettings, sendApplicantMail } from "./applicant-mail.ts";
-import { applicantMailDelays, type ApplicantMailSettings } from "../lib/olympiad.ts";
+import { applicantMailSetupError, getApplicantMailSettings, handleApplicantUnsubscribe, listApplicantMailRecipients, saveApplicantMailSettings, sendApplicantMail } from "./applicant-mail.ts";
+import { applicantMailBatchLimit, applicantMailDelays, type ApplicantMailSettings } from "../lib/olympiad.ts";
 import { readSchoolReplies } from "./school-replies.ts";
 import { isSchoolMailLayout, isSingleEmail, schoolMailDefaultLayout, schoolMailDraft, schoolMailLimit, schoolMailSubjectLimit, schoolMailTemplates, schoolMailTextLimit, type SchoolMailLayout, type SchoolMailRecipient, type SchoolMailTemplate } from "../lib/school-mail.ts";
 import { refreshInstitution, runAgent } from "../lib/ai/agent.ts";
@@ -464,20 +464,35 @@ function applicantMailAuthorized(res: ServerResponse, accessCode: unknown): bool
   return true;
 }
 
-async function handleApplicantMail(req: IncomingMessage, res: ServerResponse): Promise<void> {
+function isApplicantId(value: unknown): value is string {
+  return typeof value === "string" && /^[1-9][0-9]{0,18}$/.test(value) && BigInt(value) <= 9223372036854775807n;
+}
+
+async function handleApplicantMail(req: IncomingMessage, res: ServerResponse, batch: boolean): Promise<void> {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     send(res, 405, { error: "Метод не поддерживается." });
     return;
   }
-  const { requestId, applicantId, subject, text, accessCode } = await readBody(req, 16 * 1024);
-  if (typeof requestId !== "string" || !uuidPattern.test(requestId) || typeof applicantId !== "string" ||
-      !/^[1-9][0-9]{0,18}$/.test(applicantId) || BigInt(applicantId) > 9223372036854775807n) {
+  const { requestId, applicantId, applicantIds, subject, text, accessCode } = await readBody(req, 16 * 1024);
+  if (typeof requestId !== "string" || !uuidPattern.test(requestId)) {
+    throw new InputError("Некорректный запрос отправки.");
+  }
+  const recipients = batch ? applicantIds : [applicantId];
+  if (!Array.isArray(recipients) || !recipients.length || recipients.length > applicantMailBatchLimit || !recipients.every(isApplicantId)) {
     throw new InputError("Выберите абитуриента из реестра.");
   }
   if (!isMailLine(subject, schoolMailSubjectLimit) || !isMailText(text)) throw new InputError("Проверьте тему и текст письма.");
   if (!applicantMailAuthorized(res, accessCode)) return;
-  send(res, 200, { status: await sendApplicantMail(requestId.toLowerCase(), applicantId, { subject: subject.trim(), text: text.trim() }) });
+  const id = requestId.toLowerCase();
+  const message = { subject: subject.trim(), text: text.trim() };
+  if (!batch) {
+    send(res, 200, { status: await sendApplicantMail(id, recipients[0], message) });
+    return;
+  }
+  const distinct = [...new Set(recipients)];
+  const results = await Promise.allSettled(distinct.map((recipientId) => sendApplicantMail(`bulk:${id}:${recipientId}`, recipientId, message)));
+  send(res, 200, { outcomes: results.map((result) => result.status === "fulfilled" ? result.value : "uncertain") });
 }
 
 async function handleApplicantMailSettings(req: IncomingMessage, res: ServerResponse, user: Account): Promise<void> {
@@ -562,9 +577,18 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       }
       return true;
     }
-    if (pathname === "/api/olympiad/applicant-mail" || pathname === "/api/olympiad/applicant-mail/settings") {
+    if (pathname === "/api/olympiad/applicant-mail/recipients") {
+      if (req.method !== "GET") {
+        res.setHeader("Allow", "GET");
+        send(res, 405, { error: "Метод не поддерживается." });
+      } else {
+        send(res, 200, { recipients: listApplicantMailRecipients(), setupError: applicantMailSetupError() });
+      }
+      return true;
+    }
+    if (pathname === "/api/olympiad/applicant-mail" || pathname === "/api/olympiad/applicant-mail/batch" || pathname === "/api/olympiad/applicant-mail/settings") {
       if (pathname.endsWith("/settings")) await handleApplicantMailSettings(req, res, user);
-      else await handleApplicantMail(req, res);
+      else await handleApplicantMail(req, res, pathname.endsWith("/batch"));
       return true;
     }
     if (pathname === "/api/audit") {

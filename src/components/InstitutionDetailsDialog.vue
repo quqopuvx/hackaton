@@ -88,7 +88,7 @@ onBeforeUnmount(() => {
           </div>
         </li>
       </ul>
-      <ApplicantMailForm v-if="recipient" :key="recipient.id" :recipient="recipient" :setup-error="mailSetupError"
+      <ApplicantMailForm v-if="recipient" :key="recipient.id" :recipients="[recipient]" :setup-error="mailSetupError"
         @close="recipient = undefined" />
     </section>
   </dialog>

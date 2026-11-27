@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "start": "tsx server/index.ts",
+    "unsubscribe:start": "tsx server/unsubscribe.ts",
     "preview": "npm run start",
     "typecheck": "vue-tsc --noEmit",
     "accounts:setup": "tsx server/setup-accounts.ts"
